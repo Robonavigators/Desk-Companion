@@ -86,6 +86,41 @@ Desk-Companion provides two installation methods depending on your experience le
 | Web Flash | Beginner | First-time builders |
 | Arduino IDE | Intermediate | Developers and advanced users |
 
+## 🚀 Install Firmware via Web Flasher
+
+Install Desk-Companion directly from your desktop browser—**no Arduino IDE installation or manual firmware binary downloads required**. The Robonavigators Web Flasher uses ESP Web Tools to guide you through installation.
+
+**[⚡ Flash Desk-Companion Online](https://robonavigators-io.vercel.app/tools/flash/)**
+
+### Supported firmware builds
+
+| Board | Firmware |
+|---|---|
+| **XIAO ESP32-C3** | ESP32-C3 firmware |
+| **XIAO ESP32-S3** | ESP32-S3 firmware |
+
+ESP Web Tools identifies the connected ESP32 chip family and selects the compatible firmware build from the multi-build JSON manifest. Be sure to connect the correct board and follow the on-screen prompts.
+
+### Installation steps
+
+1. Connect your **Seeed Studio XIAO ESP32-C3** or **XIAO ESP32-S3** to your computer with a **USB data cable**.
+2. Open the [Robonavigators Web Flasher](https://robonavigators-io.vercel.app/tools/flash/) in **Google Chrome** or **Microsoft Edge** on a desktop or laptop.
+3. Click **Click to Show Firmwares**.
+4. Select **Desk-Companion**.
+5. Click **Install**.
+6. When prompted, select the correct **USB serial device**.
+7. Follow the installation prompts until flashing completes. Keep the board connected throughout.
+8. Restart the board if necessary, then follow the OLED instructions to configure Wi-Fi.
+
+### Quick troubleshooting
+
+- **Board not detected?** Use a USB **data** cable rather than a charge-only cable, and try another USB port.
+- **Connect button unavailable?** Use an up-to-date desktop version of **Chrome** or **Edge** with Web Serial support.
+- **Serial port busy?** Close Arduino IDE Serial Monitor, other terminal applications, or anything using the board's port.
+- **Flashing won't start?** Reconnect the board and, if needed, enter its **bootloader/download mode** using the board's documented BOOT/RESET procedure before retrying.
+
+For developers who prefer editing the source code, the **Arduino IDE** installation method below remains available. Availability of a particular Web Flash build depends on the published firmware binaries and manifest; source code alone does not guarantee a flashable release.
+
 ### Method 1 — Web Flash (Beginner)
 
 **Recommended for users who simply want to build and use Desk-Companion.**
