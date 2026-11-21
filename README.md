@@ -90,7 +90,7 @@ Desk-Companion provides two installation methods depending on your experience le
 
 Install Desk-Companion directly from your desktop browser—**no Arduino IDE installation or manual firmware binary downloads required**. The Robonavigators Web Flasher uses ESP Web Tools to guide you through installation.
 
-**[⚡ Flash Desk-Companion Online](https://robonavigators-io.vercel.app/tools/flash/)**
+**[Flash Desk-Companion using ESP Flasher](https://robonavigators-io.vercel.app/tools/flash/)**
 
 ### Supported firmware builds
 
