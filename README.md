@@ -23,10 +23,10 @@ The project is designed to be affordable, customizable, and beginner-friendly.
 - Capacitive touch controls
 - Deep-sleep functionality
 - Professional responsive web dashboard
-- SVG icons and custom dialogs
+- Responsive local web dashboard controls
 - Searchable emotion controls
 - Dual Wi-Fi profiles with automatic reconnection
-- Wi-Fi scanning
+- Wi-Fi scanning (including nearby-network signal strength)
 - Open Wi-Fi access point and captive portal
 - Local dashboard at `desk-companion.local`
 - ESP32 chip temperature monitoring
@@ -88,67 +88,38 @@ Desk-Companion provides two installation methods depending on your experience le
 
 ## 🚀 Install Firmware via Web Flasher
 
-Install Desk-Companion directly from your desktop browser—**no Arduino IDE installation or manual firmware binary downloads required**. The Robonavigators Web Flasher uses ESP Web Tools to guide you through installation.
+**Recommended for beginners.** Install Desk-Companion directly from a compatible desktop browser, without installing Arduino IDE or manually downloading firmware binaries.
 
-**[Flash Desk-Companion using ESP Flasher](https://robonavigators-io.vercel.app/tools/flash/)**
+**[⚡ Flash Desk-Companion Online](https://robonavigators-io.vercel.app/tools/flash/)**
 
 ### Supported firmware builds
 
-| Board | Firmware |
+| Board | Build |
 |---|---|
-| **XIAO ESP32-C3** | ESP32-C3 firmware |
-| **XIAO ESP32-S3** | ESP32-S3 firmware |
+| **Seeed Studio XIAO ESP32-C3** | ESP32-C3 firmware |
+| **Seeed Studio XIAO ESP32-S3** | ESP32-S3 firmware |
 
-ESP Web Tools identifies the connected ESP32 chip family and selects the compatible firmware build from the multi-build JSON manifest. Be sure to connect the correct board and follow the on-screen prompts.
+ESP Web Tools detects the connected ESP32 chip family and uses the multi-build JSON manifest to select the compatible firmware image. Installation requires the corresponding compiled images and manifest to be published in the Web Flasher; source files alone cannot be flashed directly through the browser.
 
 ### Installation steps
 
-1. Connect your **Seeed Studio XIAO ESP32-C3** or **XIAO ESP32-S3** to your computer with a **USB data cable**.
-2. Open the [Robonavigators Web Flasher](https://robonavigators-io.vercel.app/tools/flash/) in **Google Chrome** or **Microsoft Edge** on a desktop or laptop.
+1. Connect your **XIAO ESP32-C3** or **XIAO ESP32-S3** to your computer with a **USB data cable**.
+2. Open the [Robonavigators Web Flasher](https://robonavigators-io.vercel.app/tools/flash/) using desktop **Google Chrome** or **Microsoft Edge**.
 3. Click **Click to Show Firmwares**.
 4. Select **Desk-Companion**.
 5. Click **Install**.
-6. When prompted, select the correct **USB serial device**.
-7. Follow the installation prompts until flashing completes. Keep the board connected throughout.
-8. Restart the board if necessary, then follow the OLED instructions to configure Wi-Fi.
+6. Select the correct **USB serial device** when prompted.
+7. Follow the on-screen instructions until flashing completes; keep the board connected.
+8. Restart the board if necessary, then follow the OLED instructions for first-time Wi-Fi setup.
 
-### Quick troubleshooting
+### Web Flasher troubleshooting
 
-- **Board not detected?** Use a USB **data** cable rather than a charge-only cable, and try another USB port.
-- **Connect button unavailable?** Use an up-to-date desktop version of **Chrome** or **Edge** with Web Serial support.
-- **Serial port busy?** Close Arduino IDE Serial Monitor, other terminal applications, or anything using the board's port.
-- **Flashing won't start?** Reconnect the board and, if needed, enter its **bootloader/download mode** using the board's documented BOOT/RESET procedure before retrying.
+- **Device not found:** Use a USB data cable (not a charge-only cable) and try a different USB port.
+- **Browser cannot connect:** Use current desktop Chrome or Edge, which support Web Serial.
+- **Serial port busy:** Close Arduino IDE Serial Monitor and any other software using the port.
+- **Installation does not start:** Reconnect the board; if needed, use its documented bootloader/download-mode procedure.
 
-For developers who prefer editing the source code, the **Arduino IDE** installation method below remains available. Availability of a particular Web Flash build depends on the published firmware binaries and manifest; source code alone does not guarantee a flashable release.
-
-### Method 1 — Web Flash (Beginner)
-
-**Recommended for users who simply want to build and use Desk-Companion.**
-
-No coding knowledge or Arduino IDE installation is required.
-
-#### Requirements
-
-- XIAO ESP32-C3 or ESP32-S3
-- USB data cable
-- Desktop or laptop
-- Chrome or Microsoft Edge with Web Serial support
-- Compatible compiled firmware
-
-#### Installation Steps
-
-1. Open the **Robonavigators Web Flash Tool** at `/flash`.
-2. Connect your XIAO ESP32 board using a USB data cable.
-3. Select **Desk-Companion**.
-4. Choose your board model:
-   - XIAO ESP32-C3
-   - XIAO ESP32-S3
-5. Click **Connect** and select your device's serial port.
-6. Start flashing the firmware.
-7. Restart the device after installation.
-8. Follow the OLED instructions to configure Desk-Companion.
-
-**Note:** Web Flash installation requires the correct compiled `.bin` files and flash manifest to be published. The installation option will be usable once these files are configured in the tool.
+Developers who want to modify firmware can use the Arduino IDE instructions below.
 
 ### Method 2 — Arduino IDE (Intermediate)
 
@@ -193,12 +164,13 @@ The ESP32 Arduino core provides additional system libraries, including WiFi, Web
 Select the appropriate source file:
 
 ```text
-firmware/
-├── XIAO-ESP32-C3/
-│   └── Desk-Companion-C3.ino
-└── XIAO-ESP32-S3/
-    └── Desk-Companion-S3.ino
+Firmware/
+├── Desk-Companion-XIAO-ESP32-C3.ino
+└── Desk-Companion-XIAO-ESP32-S3.ino
 ```
+
+- [XIAO ESP32-C3 firmware](Firmware/Desk-Companion-XIAO-ESP32-C3.ino)
+- [XIAO ESP32-S3 firmware](Firmware/Desk-Companion-XIAO-ESP32-S3.ino)
 
 #### Step 5 — Configure the Board
 
@@ -228,7 +200,7 @@ Desk-Companion-XXXX
 
 The final four hexadecimal characters are derived from the device's Wi-Fi MAC address.
 
-For example, a MAC address ending in `57:B9` produces:
+For example, if the last two MAC address bytes are `57:B9`, the hotspot name is:
 
 ```text
 Desk-Companion-57B9
@@ -247,7 +219,7 @@ Desk-Companion-57B9
 
 Wi-Fi settings are stored in NVS and survive device restarts.
 
-The OLED displays setup instructions when no Wi-Fi profile has been configured. Otherwise, it proceeds to normal operation after the startup screen.
+The OLED displays setup instructions on first use and shows Wi-Fi recovery instructions after a previously configured device has been offline for approximately 30 seconds. Initial setup completes once a saved network connects successfully.
 
 ## OLED Startup
 
@@ -271,7 +243,7 @@ When connected directly to the device hotspot:
 The dashboard provides:
 
 - Device status and uptime
-- Wi-Fi signal strength
+- Nearby-network signal strength during Wi-Fi scanning
 - ESP32 CPU temperature
 - Four-second connection monitoring
 - OLED screen switching
@@ -281,7 +253,7 @@ The dashboard provides:
 - Weather and location configuration
 - Restart and sleep controls
 
-The dashboard uses custom SVG icons, dialogs, and notifications.
+The dashboard is embedded in the firmware source and includes HTML, CSS, JavaScript, and basic confirmation prompts.
 
 The CPU temperature represents the ESP32's internal chip temperature, not the ambient room temperature.
 
@@ -354,22 +326,14 @@ An internet connection is required for online weather updates and initial time s
 
 ```text
 Desk-Companion/
-├── firmware/
-│   ├── XIAO-ESP32-C3/
-│   │   └── Desk-Companion-C3.ino
-│   └── XIAO-ESP32-S3/
-│       └── Desk-Companion-S3.ino
-├── dashboard/
-│   └── index.html
-├── docs/
-│   ├── wiring.md
-│   ├── installation.md
-│   └── architecture.md
-├── assets/
-│   └── screenshots/
+├── Firmware/
+│   ├── Desk-Companion-XIAO-ESP32-C3.ino
+│   └── Desk-Companion-XIAO-ESP32-S3.ino
 ├── README.md
 └── LICENSE
 ```
+
+The web dashboard is embedded in each board-specific firmware sketch. There are no separate `dashboard/`, `docs/`, or `assets/` directories in the current repository.
 
 ## Troubleshooting
 
@@ -413,7 +377,7 @@ Desk-Companion is under active development.
 
 C3 and S3 firmware versions have been prepared. The latest firmware still requires complete compilation and hardware validation.
 
-Web Flash installation requires compatible binaries and manifests to be published.
+Web Flash installation depends on compatible compiled binaries and the multi-build manifest being available through the Web Flasher. Availability and physical-hardware testing have not been independently verified.
 
 ## Contributing
 
