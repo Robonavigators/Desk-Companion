@@ -1,1227 +1,1233 @@
-
 /*
-  DESK-COMPANION — XIAO ESP32-S3
-  Robonavigators
-
-  TTP223: D10 / GPIO9
-  OLED: SSD1306 128x64 I2C
-
-  66 emotions, clock, weather, forecast,
-  dual Wi-Fi, captive portal, 30-second
-  automatic AP recovery, OTA and web UI.
-
-  OTA password: admin123
-  Arduino ESP32 Core 3.x
-  Libraries: U8g2, ArduinoJson 7, NTPClient
+  Desk-Companion Lite - XIAO ESP32-S3 / WebServer edition
+  Open-source friendly: no personal data, default network credentials, or API keys.
+  Required libraries: U8g2, ArduinoJson 7, NTPClient; ESP32 Arduino core.
+  Built-in: WiFi, WebServer, Preferences, ESPmDNS, ArduinoOTA, HTTPClient.
+  Touch TTP223 OUT -> D10 / GPIO9. OLED I2C -> board SDA/SCL.
+  First boot: connect to open device hotspot shown on OLED (or Serial).
+  Captive portal: DNSServer wildcard DNS + OS detection redirects to dashboard.
+  Connect to hotspot, visit http://192.168.4.1, configure WiFi/weather.
+  Dashboard and device hotspot have no password. Use only in trusted environments.
+  For local/trusted networks only: HTTP is not encrypted. Avoid untrusted WiFi.
+  Wi-Fi/API secrets saved in ESP32 NVS (not encrypted against physical extraction).
 */
-
-#include <Arduino.h>
+// Desk-Companion Lite for Seeed XIAO ESP32-S3 (no speaker)
+// Rewire TTP223 OUT to D10 / GPIO9. Select XIAO_ESP32S3 in Arduino IDE.
+// Requires Arduino-ESP32 core with C3 GPIO deep-sleep wake support.
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
-#include <ArduinoOTA.h>
 #include <HTTPClient.h>
 #include <WiFiUdp.h>
 #include <NTPClient.h>
 #include <ArduinoJson.h>
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <ArduinoOTA.h>
 #include <esp_mac.h>
-#include <esp_sleep.h>
-#include <time.h>
 
-#define TOUCH_PIN 9
-#define LED_PIN 21
-#define RETRY_MS 15000UL
-#define RECOVERY_MS 30000UL
-#define CLOSE_MS 1800UL
-#define WEATHER_MS 900000UL
-#define FRAME_MS 33UL
-
-WebServer web(80);
-DNSServer dns;
+// --- Generic device configuration; no personal credentials in firmware ---
+#define TTP_PIN 9  // XIAO ESP32-S3 D10 / GPIO9
+WebServer server(80);
+DNSServer captiveDns;
+const uint16_t CAPTIVE_DNS_PORT = 53;
 Preferences prefs;
-WiFiUDP udp;
-NTPClient ntp(udp,"time.google.com",0,60000);
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(
-  U8G2_R0,U8X8_PIN_NONE
-);
+String wifiSSID, wifiPassword, wifiSSID2, wifiPassword2, weatherKey, cityLabel = "", locationState = "", locationCountry = "";
+String apSSID, adminSecret; // adminSecret retained only for OTA authentication
+float weatherLat = 0.0f, weatherLon = 0.0f;
+int utcOffsetSeconds = 0;
+bool weatherConfigured = false, otaStarted = false, portalReady = false;
+bool setupRequired = false; // Remains true until Wi-Fi is connected and setup completes
+unsigned long setupConnectedAt = 0;
+const unsigned long SETUP_FINISH_DELAY_MS = 1800; // Allow browser save response to finish
+unsigned long lastWiFiAttempt = 0;
+bool trySecondaryNext = false;
+const unsigned long WIFI_RETRY_MS = 15000;
+const unsigned long WIFI_RECOVERY_DELAY_MS = 30000;
+bool recoveryAPActive = false;
+unsigned long wifiOfflineSince = 0;
+unsigned long recoveryConnectedSince = 0;
 
-String wifi1,password1,wifi2,password2;
-String hotspot,city,stateName,country,weatherKey;
-float latitude=0,longitude=0;
-long utcOffset=0;
-
-bool firstSetup=false;
-bool apEnabled=false;
-bool otaEnabled=false;
-bool mdnsEnabled=false;
-bool weatherEnabled=false;
-bool backupNext=false;
-
-unsigned long offlineAt=0;
-unsigned long onlineAt=0;
-unsigned long retryAt=0;
-unsigned long weatherAt=0;
-unsigned long frameAt=0;
-
-bool sleeping=false;
-unsigned long sleepAt=0;
-bool pressed=false;
-bool longDone=false;
-unsigned long pressAt=0;
-
-int screen=0;
-int emotion=0;
-bool manualEmotion=false;
-unsigned long emotionAt=0;
-unsigned long emotionHold=5000;
-int pupilX=0,pupilY=0,targetX=0,targetY=0;
-unsigned long eyeAt=0,targetAt=0;
-
-String condition="Loading...";
-float temperature=0,shownTemp=0,wind=0;
-int humidity=0,weatherID=800;
-float forecastTemp[3]={0,0,0};
-int forecastID[3]={800,800,800};
-
-const char* DAYS[]={"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
-const char* MONTHS[]={
-  "Jan","Feb","Mar","Apr","May","Jun",
-  "Jul","Aug","Sep","Oct","Nov","Dec"
-};
-
-const char* EMOTIONS[]={
-  "Neutral","Happy","Sad","Angry","Surprised","Sleepy",
-  "Love","Wink","Confused","Scared","Bored","Excited",
-  "Crying","Laughing","Suspicious","Dizzy","Sick","Cool",
-  "Shocked","Annoyed","Curious","Thinking","Embarrassed",
-  "Proud","Worried","Blink","Jealous","Grumpy",
-  "Mischievous","Shy","Nervous","Ecstatic","Frustrated",
-  "Hopeful","Grateful","Nostalgic","Determined","Playful",
-  "Sarcastic","Smug","Guilty","Relieved","Anxious",
-  "Content","Irritated","Amused","Skeptical","Horrified",
-  "Peaceful","Starstruck","Drowsy","Puzzled","Devious",
-  "Humble","Optimistic","Pessimistic","Focused",
-  "Daydreaming","Miserable","Cheeky","Alert","Calm",
-  "Furious","Tearful","Hysterical","Smitten"
-};
-
-const int EMOTION_COUNT=66;
-
-// ====================================================
-// DISPLAY
-// ====================================================
-
-void centerText(const String &text,int y){
-  int x=max(0,(128-(int)oled.getStrWidth(text.c_str()))/2);
-  oled.drawStr(x,y,text.c_str());
-}
-
-void startupScreen(){
-  oled.clearBuffer();
-  oled.setFont(u8g2_font_logisoso16_tf);
-  centerText("DESK",27);
-  centerText("COMPANION",54);
-  oled.sendBuffer();
-}
-
-void setupScreen(bool recovery){
-  oled.clearBuffer();
-  oled.setFont(u8g2_font_6x10_tf);
-  oled.drawStr(0,10,recovery?"WI-FI RECOVERY":"SETUP REQUIRED");
-  oled.drawHLine(0,13,128);
-  oled.drawStr(0,24,"Connect to:");
-  oled.drawStr(0,36,"Desk-Companion-");
-  oled.drawStr(92,36,hotspot.substring(hotspot.length()-4).c_str());
-  oled.drawStr(0,49,"Open 192.168.4.1");
-  oled.drawStr(0,61,recovery?"Retrying Wi-Fi...":"Waiting for Wi-Fi");
-  oled.sendBuffer();
-}
-
-void drawOneEye(int x,int y,int style){
-  switch(style){
-    case 0:
-      oled.drawDisc(x,y,17);
-      oled.setDrawColor(0);
-      oled.drawDisc(x+pupilX,y+pupilY,6);
-      oled.setDrawColor(1);
-      break;
-    case 1:
-      oled.drawCircle(x,y,17);
-      oled.drawDisc(x,y,5);
-      break;
-    case 2:
-      oled.drawBox(x-16,y-2,32,4);
-      break;
-    case 3:
-      oled.drawFilledEllipse(x,y,17,10);
-      break;
-    case 4:
-      oled.drawBox(x-16,y-2,32,4);
-      oled.drawCircle(x,y+4,12);
-      break;
-    case 5:
-      oled.drawLine(x-9,y-9,x+9,y+9);
-      oled.drawLine(x-9,y+9,x+9,y-9);
-      break;
-    case 6:
-      oled.drawBox(x-18,y-4,36,8);
-      break;
-    default:
-      oled.drawCircle(x,y,14);
-      oled.drawDisc(x,y,3);
-      break;
+// The setup access point is open. Start it only when configuration/recovery is needed.
+void startRecoveryAP() {
+  if (recoveryAPActive) return;
+  WiFi.mode(WIFI_AP_STA);  // Keep the STA interface available for reconnection.
+  WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
+  if (WiFi.softAP(apSSID.c_str())) {
+    captiveDns.start(CAPTIVE_DNS_PORT, "*", WiFi.softAPIP());
+    recoveryAPActive = true;
+    Serial.println("Recovery AP ON: " + apSSID + " at http://192.168.4.1/");
+  } else {
+    Serial.println("Recovery AP failed to start; will retry");
   }
 }
 
-void drawMouth(int width,int curve){
-  if(width<2)return;
-  int px=64-width/2,py=50;
-  for(int i=-width/2;i<=width/2;i+=2){
-    float t=float(i)/float(width/2);
-    int y=50+int(curve*t*t);
-    oled.drawLine(px,py,64+i,y);
-    px=64+i;py=y;
-  }
-}
-
-void drawExtras(){
-  if(emotion==6 || emotion==65){
-    for(int x:{35,93}){
-      oled.drawDisc(x-5,23,5);
-      oled.drawDisc(x+5,23,5);
-      oled.drawTriangle(x-10,25,x+10,25,x,38);
-    }
-  }
-  if(emotion==12 || emotion==58 || emotion==63){
-    oled.drawFilledEllipse(28,53,3,8);
-    oled.drawFilledEllipse(100,53,3,8);
-  }
-  if(emotion==8 || emotion==21 || emotion==51){
-    oled.setFont(u8g2_font_helvB10_tf);
-    oled.drawStr(60,13,"?");
-  }
-  if(emotion==5 || emotion==50 || emotion==57){
-    oled.setFont(u8g2_font_helvB10_tf);
-    oled.drawStr(105,13,"Z");
-  }
-  if(emotion==22 || emotion==29){
-    oled.drawFilledEllipse(25,47,6,3);
-    oled.drawFilledEllipse(103,47,6,3);
-  }
-  if(emotion==11 || emotion==31 || emotion==49 ||
-     emotion==64){
-    oled.drawLine(8,7,8,20);
-    oled.drawLine(2,13,14,13);
-    oled.drawLine(120,7,120,20);
-    oled.drawLine(114,13,126,13);
-  }
-}
-
-void drawFace(){
-  if(!manualEmotion && millis()-emotionAt>=emotionHold){
-    int next;
-    do{
-      next=random(EMOTION_COUNT);
-    }while(next==emotion);
-    emotion=next;
-    emotionAt=millis();
-    emotionHold=random(3000,8000);
-  }
-
-  if(emotion==0){
-    if(millis()-targetAt>2000){
-      targetX=random(-7,8);
-      targetY=random(-6,7);
-      targetAt=millis();
-    }
-    if(millis()-eyeAt>=35){
-      if(pupilX<targetX)pupilX++;
-      if(pupilX>targetX)pupilX--;
-      if(pupilY<targetY)pupilY++;
-      if(pupilY>targetY)pupilY--;
-      eyeAt=millis();
-    }
-  }else{
-    pupilX=pupilY=0;
-  }
-
-  int style=(emotion*7+emotion/3)%8;
-  int curve=(emotion*11)%27-10;
-  int width=22+(emotion*13)%33;
-
-  if(emotion==0){style=0;width=0;}
-  if(emotion==1){style=3;curve=14;}
-  if(emotion==2){style=1;curve=-12;}
-  if(emotion==3){style=0;curve=-8;}
-  if(emotion==5){style=2;curve=3;}
-  if(emotion==7){style=4;curve=12;}
-  if(emotion==13){style=2;curve=20;}
-  if(emotion==15 || emotion==16)style=5;
-  if(emotion==25 || emotion==48)style=2;
-
-  drawOneEye(35,31,style);
-  drawOneEye(93,31,emotion==7?2:style);
-
-  if(emotion==3 || emotion==19 ||
-     emotion==32 || emotion==62){
-    oled.drawLine(22,13,46,21);
-    oled.drawLine(82,21,106,13);
-  }
-  drawMouth(width,curve);
-  drawExtras();
-}
-
-void drawClock(){
-  time_t epoch=ntp.getEpochTime();
-  struct tm *t=gmtime(&epoch);
-  if(!t)return;
-
-  String date=String(DAYS[t->tm_wday])+", "+
-    String(t->tm_mday)+" "+MONTHS[t->tm_mon];
-
-  oled.setFont(u8g2_font_helvR08_tf);
-  centerText(date,12);
-
-  int h=t->tm_hour;
-  const char* ampm=h>=12?"PM":"AM";
-  h=h%12;
-  if(!h)h=12;
-
-  char b[8];
-  snprintf(b,sizeof(b),"%02d:%02d",h,t->tm_min);
-
-  oled.setFont(u8g2_font_logisoso28_tn);
-  oled.drawStr(4,49,b);
-  oled.setFont(u8g2_font_helvB08_tf);
-  oled.drawStr(108,49,ampm);
-}
-
-int iconFor(int id){
-  if(id>=200 && id<300)return 66;
-  if(id>=300 && id<600)return 67;
-  if(id>=600 && id<700)return 70;
-  if(id>=700 && id<800)return 255;
-  if(id==800)return 69;
-  return 65;
-}
-
-void weatherGlyph(int x,int y,int id,bool small){
-  int symbol=iconFor(id);
-  if(symbol==255){
-    for(int i=0;i<3;i++)
-      oled.drawHLine(x,y+i*(small?4:7),small?17:28);
-  }else{
-    oled.setFont(small?
-      u8g2_font_open_iconic_weather_2x_t:
-      u8g2_font_open_iconic_weather_4x_t);
-    oled.drawGlyph(x,y,symbol);
-  }
-}
-
-void drawWeather(){
-  oled.setFont(u8g2_font_helvR08_tf);
-  centerText(city.isEmpty()?"Weather":city,9);
-  oled.drawHLine(0,12,128);
-
-  char b[12];
-  snprintf(b,sizeof(b),"%d",int(round(shownTemp)));
-  oled.setFont(u8g2_font_logisoso22_tn);
-  oled.drawStr(5,40,b);
-  int w=oled.getStrWidth(b);
-  oled.drawCircle(w+10,20,3);
-
-  oled.setFont(u8g2_font_helvR08_tf);
-  oled.drawStr(w+18,22,"C");
-  oled.drawStr(5,49,condition.c_str());
-  weatherGlyph(85,40,weatherID,false);
-
-  oled.drawRFrame(0,52,128,12,4);
-  char stats[32];
-  snprintf(stats,sizeof(stats),"H:%d%%  W:%.0fm/s",
-    humidity,wind);
-  oled.drawStr(5,61,stats);
-}
-
-void drawForecast(){
-  oled.setFont(u8g2_font_helvB08_tf);
-  centerText("3-Day Forecast",10);
-  oled.drawHLine(10,13,108);
-
-  for(int i=0;i<3;i++){
-    int y=28+i*16;
-    oled.setFont(u8g2_font_helvR08_tf);
-    oled.drawStr(12,y,DAYS[(ntp.getDay()+i+1)%7]);
-    weatherGlyph(54,y+3,forecastID[i],true);
-
-    char b[12];
-    snprintf(b,sizeof(b),"%d C",
-      int(round(forecastTemp[i])));
-    oled.setFont(u8g2_font_helvR08_tf);
-    oled.drawStr(85,y,b);
-  }
-}
-
-// ====================================================
-// OPENWEATHERMAP
-// ====================================================
-
-String weatherName(int id){
-  if(id>=200 && id<300)return "Storm";
-  if(id>=300 && id<500)return "Drizzle";
-  if(id>=500 && id<600)return "Rain";
-  if(id>=600 && id<700)return "Snow";
-  if(id>=700 && id<800)return "Mist/Fog";
-  if(id==800)return "Clear";
-  if(id==801)return "Few Clouds";
-  return "Cloudy";
-}
-
-void getCurrentWeather(){
-  if(WiFi.status()!=WL_CONNECTED || !weatherEnabled)return;
-
-  String url="http://api.openweathermap.org/data/2.5/weather?lat="+
-    String(latitude,4)+"&lon="+String(longitude,4)+
-    "&units=metric&appid="+weatherKey;
-
-  HTTPClient http;
-  http.setTimeout(8000);
-  http.begin(url);
-  if(http.GET()==200){
-    JsonDocument d;
-    if(!deserializeJson(d,http.getStream())){
-      temperature=d["main"]["temp"].as<float>();
-      humidity=d["main"]["humidity"].as<int>();
-      wind=d["wind"]["speed"].as<float>();
-      weatherID=d["weather"][0]["id"].as<int>();
-      condition=weatherName(weatherID);
-
-      if(!d["timezone"].isNull()){
-        long offset=d["timezone"].as<long>();
-        if(offset>=-43200 && offset<=50400){
-          utcOffset=offset;
-          ntp.setTimeOffset(offset);
-          prefs.putLong("utcOffset",offset);
-        }
-      }
-    }
-  }
-  http.end();
-}
-
-void getForecast(){
-  if(WiFi.status()!=WL_CONNECTED || !weatherEnabled)return;
-
-  String url="http://api.openweathermap.org/data/2.5/forecast?lat="+
-    String(latitude,4)+"&lon="+String(longitude,4)+
-    "&units=metric&appid="+weatherKey;
-
-  HTTPClient http;
-  http.setTimeout(8000);
-  http.begin(url);
-  if(http.GET()==200){
-    JsonDocument d;
-    if(!deserializeJson(d,http.getStream())){
-      long today=ntp.getEpochTime()/86400;
-      bool found[3]={false,false,false};
-
-      for(JsonVariant item:d["list"].as<JsonArray>()){
-        long ts=item["dt"].as<long>()+utcOffset;
-        int slot=ts/86400-today-1;
-        int hour=(ts%86400)/3600;
-
-        if(slot>=0 && slot<3 &&
-           hour>=11 && hour<=15 && !found[slot]){
-          forecastTemp[slot]=item["main"]["temp"].as<float>();
-          forecastID[slot]=item["weather"][0]["id"].as<int>();
-          found[slot]=true;
-        }
-      }
-    }
-  }
-  http.end();
-}
-
-bool locate(String c,String s,String co,String key,
-            float &a,float &b){
-  if(WiFi.status()!=WL_CONNECTED)return false;
-
-  if(co.equalsIgnoreCase("India"))co="IN";
-  if(co.equalsIgnoreCase("United States"))co="US";
-  if(co.equalsIgnoreCase("United Kingdom"))co="GB";
-  if(co.equalsIgnoreCase("United Arab Emirates"))co="AE";
-
-  String q=c+","+s+","+co;
-  q.replace(" ","%20");
-  q.replace(",","%2C");
-
-  HTTPClient http;
-  http.setTimeout(8000);
-  http.begin("http://api.openweathermap.org/geo/1.0/direct?q="+
-    q+"&limit=5&appid="+key);
-  if(http.GET()!=200){http.end();return false;}
-
-  JsonDocument d;
-  auto err=deserializeJson(d,http.getStream());
-  http.end();
-  if(err || !d.is<JsonArray>())return false;
-
-  for(JsonVariant item:d.as<JsonArray>()){
-    String rs=item["state"] | "";
-    String rc=item["country"] | "";
-    if(rs.equalsIgnoreCase(s) && rc.equalsIgnoreCase(co)){
-      a=item["lat"].as<float>();
-      b=item["lon"].as<float>();
-      return true;
-    }
-  }
-  return false;
-}
-
-// ====================================================
-// WI-FI AND OTA
-// ====================================================
-
-void startHotspot(){
-  if(apEnabled)return;
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAPConfig(
-    IPAddress(192,168,4,1),
-    IPAddress(192,168,4,1),
-    IPAddress(255,255,255,0)
-  );
-
-  if(WiFi.softAP(hotspot.c_str())){
-    dns.start(53,"*",WiFi.softAPIP());
-    apEnabled=true;
-    Serial.println("AP ON: "+hotspot);
-  }
-}
-
-void stopHotspot(){
-  if(!apEnabled)return;
-  dns.stop();
+void stopRecoveryAP() {
+  if (!recoveryAPActive) return;
+  captiveDns.stop();
   WiFi.softAPdisconnect(true);
-  apEnabled=false;
+  recoveryAPActive = false;
   WiFi.mode(WIFI_STA);
-  Serial.println("AP OFF");
+  Serial.println("Recovery AP OFF: station Wi-Fi connected");
 }
 
-void connectWiFi(bool backup){
-  String s=backup?wifi2:wifi1;
-  String p=backup?password2:password1;
-  if(s.isEmpty())return;
-  retryAt=millis();
-  WiFi.disconnect(false);
-  WiFi.begin(s.c_str(),p.c_str());
-  Serial.println("Connecting to "+s);
+const char* SCREEN_NAMES[] = {"Emotions", "Clock", "Weather", "Forecast"};
+bool manualEmotion = false;
+void setupWebServer();
+
+// Hardware Objects
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// Time Settings
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "time.google.com", 0, 60000); 
+String days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+String months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+
+// Weather settings are stored locally in NVS and never included in firmware.
+String currentCondition = "Loading...";
+float currentTemp = 0.0;
+float displayedTemp = 0.0;      // smoothed value shown on screen
+uint16_t weatherIcon = 69; 
+int currentHumidity = 0;
+float currentWindSpeed = 0.0;
+String currentWindDir = "N";
+
+// Forecast Data
+float fc_temp[3] = {0, 0, 0};
+uint16_t fc_icon[3] = {69, 69, 69};
+unsigned long lastWeatherUpdate = 0;
+
+// State Management
+int displayState = 0; 
+unsigned long bootTime = 0;
+
+// Button & Deep Sleep Variables
+bool isPressing = false;
+unsigned long btnPressTime = 0;
+bool longPressHandled = false;
+bool isGoingToSleep = false;
+unsigned long sleepTimer = 0;
+
+// Frame Rate Limiter
+unsigned long lastFrameTime = 0;
+const int FRAME_DELAY = 33; 
+
+// Eye Animation Variables (used only in NEUTRAL emotion for idle look-around)
+int currentPupilX = 0, currentPupilY = 0;
+int targetPupilX = 0, targetPupilY = 0;
+unsigned long lastEyeUpdate = 0;
+unsigned long lastEyePause = 0;
+int eyePauseDuration = 2000;
+
+// ==================================================================
+//  EMOTION SYSTEM — 66 emotions (26 original + 40 new)
+// ==================================================================
+enum Emotion {
+  NEUTRAL, HAPPY, SAD, ANGRY, SURPRISED, SLEEPY, LOVE, WINK,
+  CONFUSED, SCARED, BORED, EXCITED, CRYING, LAUGHING, SUSPICIOUS,
+  DIZZY, SICK, COOL, SHOCKED, ANNOYED, CURIOUS, THINKING,
+  EMBARRASSED, PROUD, WORRIED, BLINK,
+  JEALOUS, GRUMPY, MISCHIEVOUS, SHY, NERVOUS, ECSTATIC, FRUSTRATED,
+  HOPEFUL, GRATEFUL, NOSTALGIC, DETERMINED, PLAYFUL, SARCASTIC, SMUG,
+  GUILTY, RELIEVED, ANXIOUS, CONTENT, IRRITATED, AMUSED, SKEPTICAL,
+  HORRIFIED, PEACEFUL, STARSTRUCK, DROWSY, PUZZLED, DEVIOUS, HUMBLE,
+  OPTIMISTIC, PESSIMISTIC, FOCUSED, DAYDREAMING, MISERABLE, CHEEKY,
+  ALERT, CALM, FURIOUS, TEARFUL, HYSTERICAL, SMITTEN
+};
+const int EMOTION_COUNT = 66;
+Emotion currentEmotion = NEUTRAL;
+unsigned long lastEmotionChange = 0;
+unsigned long emotionHoldTime = 5000;
+
+enum EyeShape { EYE_DISC, EYE_RING, EYE_CLOSED_LINE, EYE_ELLIPSE, EYE_HALF, EYE_X, EYE_DOT_RING, EYE_SQUINT };
+enum Extra { EX_NONE, EX_TEARS, EX_SPARKLE, EX_QMARK, EX_SWEAT, EX_HEARTS, EX_SPIRAL, EX_ZZZ, EX_BLUSH, EX_EXCLAIM };
+
+struct EmotionParams {
+  EyeShape eye;
+  int browTiltL;
+  int browTiltR;
+  bool showBrow;
+  int mouthAmp;
+  int mouthWidth;
+  Extra extra;
+};
+
+// Explicit declarations: keep Arduino sketch auto-prototypes from using
+// EyeShape, Extra, and Emotion before their enum definitions.
+void drawOneEye(int cx, int cy, EyeShape shape);
+void drawExtra(Extra ex, int lx, int rx, int ey);
+void drawFace(Emotion e);
+
+EmotionParams EMO[EMOTION_COUNT] = {
+  /*NEUTRAL*/       {EYE_DISC, 0, 0, false, 0, 0, EX_NONE},
+  /*HAPPY*/         {EYE_ELLIPSE, 0, 0, false, 14, 50, EX_NONE},
+  /*SAD*/           {EYE_RING, -8, 8, true, -14, 46, EX_NONE},
+  /*ANGRY*/         {EYE_DISC, 10, -10, true, -8, 40, EX_NONE},
+  /*SURPRISED*/     {EYE_RING, 0, 0, false, 0, 12, EX_EXCLAIM},
+  /*SLEEPY*/        {EYE_CLOSED_LINE, 0, 0, false, 3, 20, EX_NONE},
+  /*LOVE*/          {EYE_DISC, 0, 0, false, 12, 40, EX_HEARTS},
+  /*WINK*/          {EYE_HALF, 0, 0, false, 12, 40, EX_NONE},
+  /*CONFUSED*/      {EYE_RING, 6, 0, true, -4, 26, EX_QMARK},
+  /*SCARED*/        {EYE_RING, -10, 10, true, -10, 20, EX_SWEAT},
+  /*BORED*/         {EYE_CLOSED_LINE, 0, 0, false, 0, 28, EX_NONE},
+  /*EXCITED*/       {EYE_ELLIPSE, 0, 0, false, 18, 56, EX_SPARKLE},
+  /*CRYING*/        {EYE_RING, 0, 0, false, -10, 30, EX_TEARS},
+  /*LAUGHING*/      {EYE_CLOSED_LINE, 0, 0, false, 20, 44, EX_NONE},
+  /*SUSPICIOUS*/    {EYE_HALF, 6, 0, true, -3, 30, EX_NONE},
+  /*DIZZY*/         {EYE_X, 0, 0, false, -4, 24, EX_SPIRAL},
+  /*SICK*/          {EYE_X, 0, 0, false, -6, 22, EX_NONE},
+  /*COOL*/          {EYE_SQUINT, 0, 0, false, 6, 34, EX_NONE},
+  /*SHOCKED*/       {EYE_RING, 0, 0, false, 0, 8, EX_NONE},
+  /*ANNOYED*/       {EYE_HALF, -6, 6, true, 0, 28, EX_NONE},
+  /*CURIOUS*/       {EYE_DISC, 0, 10, true, 4, 24, EX_NONE},
+  /*THINKING*/      {EYE_HALF, 0, 0, false, 0, 20, EX_QMARK},
+  /*EMBARRASSED*/   {EYE_DISC, 0, 0, false, 4, 20, EX_BLUSH},
+  /*PROUD*/         {EYE_HALF, 4, -4, true, 12, 46, EX_NONE},
+  /*WORRIED*/       {EYE_RING, -8, 8, true, -6, 24, EX_SWEAT},
+  /*BLINK*/         {EYE_CLOSED_LINE, 0, 0, false, 0, 24, EX_NONE},
+  /*JEALOUS*/       {EYE_HALF, -4, -4, true, -6, 24, EX_NONE},
+  /*GRUMPY*/        {EYE_HALF, -8, 8, true, -10, 30, EX_NONE},
+  /*MISCHIEVOUS*/   {EYE_HALF, 8, 4, true, 10, 34, EX_NONE},
+  /*SHY*/           {EYE_DISC, 0, 0, false, 4, 18, EX_BLUSH},
+  /*NERVOUS*/       {EYE_RING, -6, 6, true, -3, 20, EX_SWEAT},
+  /*ECSTATIC*/      {EYE_ELLIPSE, 0, 0, false, 22, 58, EX_SPARKLE},
+  /*FRUSTRATED*/    {EYE_HALF, -10, 10, true, -8, 32, EX_NONE},
+  /*HOPEFUL*/       {EYE_DISC, 6, 6, true, 8, 30, EX_NONE},
+  /*GRATEFUL*/      {EYE_HALF, 2, 2, true, 10, 36, EX_NONE},
+  /*NOSTALGIC*/     {EYE_HALF, 0, 0, false, 4, 28, EX_NONE},
+  /*DETERMINED*/    {EYE_DISC, 8, -8, true, 2, 30, EX_NONE},
+  /*PLAYFUL*/       {EYE_DISC, 0, 6, true, 14, 42, EX_NONE},
+  /*SARCASTIC*/     {EYE_HALF, 0, 8, true, -2, 26, EX_NONE},
+  /*SMUG*/          {EYE_HALF, 0, 0, false, 8, 30, EX_NONE},
+  /*GUILTY*/        {EYE_DISC, 0, 0, false, -4, 18, EX_SWEAT},
+  /*RELIEVED*/      {EYE_HALF, 0, 0, false, 8, 32, EX_NONE},
+  /*ANXIOUS*/       {EYE_RING, -6, 6, true, -6, 22, EX_SWEAT},
+  /*CONTENT*/       {EYE_HALF, 0, 0, false, 6, 30, EX_NONE},
+  /*IRRITATED*/     {EYE_DISC, -8, 8, true, -4, 26, EX_NONE},
+  /*AMUSED*/        {EYE_HALF, 0, 0, false, 10, 36, EX_NONE},
+  /*SKEPTICAL*/     {EYE_HALF, 8, 0, true, -2, 24, EX_NONE},
+  /*HORRIFIED*/     {EYE_RING, -10, 10, true, -12, 18, EX_SWEAT},
+  /*PEACEFUL*/      {EYE_CLOSED_LINE, 0, 0, false, 6, 26, EX_NONE},
+  /*STARSTRUCK*/    {EYE_DISC, 0, 0, false, 10, 36, EX_SPARKLE},
+  /*DROWSY*/        {EYE_HALF, 0, 0, false, 0, 20, EX_ZZZ},
+  /*PUZZLED*/       {EYE_RING, 6, -4, true, -2, 22, EX_QMARK},
+  /*DEVIOUS*/       {EYE_HALF, 10, 4, true, -2, 32, EX_NONE},
+  /*HUMBLE*/        {EYE_HALF, -2, -2, true, 4, 24, EX_NONE},
+  /*OPTIMISTIC*/    {EYE_DISC, 6, 6, true, 10, 36, EX_NONE},
+  /*PESSIMISTIC*/   {EYE_HALF, -6, -6, true, -8, 26, EX_NONE},
+  /*FOCUSED*/       {EYE_SQUINT, 0, 0, false, -2, 24, EX_NONE},
+  /*DAYDREAMING*/   {EYE_HALF, 0, 0, false, 2, 22, EX_ZZZ},
+  /*MISERABLE*/     {EYE_RING, -10, 10, true, -14, 30, EX_TEARS},
+  /*CHEEKY*/        {EYE_HALF, 4, 4, true, 12, 38, EX_NONE},
+  /*ALERT*/         {EYE_RING, 4, 4, true, 0, 20, EX_NONE},
+  /*CALM*/          {EYE_HALF, 0, 0, false, 4, 28, EX_NONE},
+  /*FURIOUS*/       {EYE_DISC, 14, -14, true, -10, 38, EX_NONE},
+  /*TEARFUL*/       {EYE_RING, -4, 4, true, -8, 26, EX_TEARS},
+  /*HYSTERICAL*/    {EYE_CLOSED_LINE, 0, 0, false, 22, 50, EX_SPARKLE},
+  /*SMITTEN*/       {EYE_DISC, 0, 0, false, 14, 40, EX_HEARTS},
+};
+
+// ---------- helper drawing primitives ----------
+void drawMouthCurve(int cx, int cy, int w, int amp) {
+  if (w <= 0) return;
+  int prevX = cx - w / 2, prevY = cy;
+  for (int i = -w / 2; i <= w / 2; i += 2) {
+    float t = (float)i / (w / 2.0);
+    int y = cy + (int)(amp * (t * t));
+    u8g2.drawLine(prevX, prevY, cx + i, y);
+    prevX = cx + i; prevY = y;
+  }
 }
 
-void manageConnection(){
-  if(WiFi.status()!=WL_CONNECTED){
-    onlineAt=0;
-    if(!offlineAt)offlineAt=millis();
+void drawEyebrow(int x, int y, int len, int angleTilt) {
+  u8g2.drawLine(x - len / 2, y, x + len / 2, y - angleTilt);
+}
 
-    if(millis()-retryAt>=RETRY_MS){
-      bool backup=backupNext && !wifi2.isEmpty();
-      if(wifi1.isEmpty())backup=true;
-      connectWiFi(backup);
-      backupNext=!backupNext;
-    }
-
-    if(!firstSetup && !apEnabled &&
-       millis()-offlineAt>=RECOVERY_MS){
-      startHotspot();
-    }
-    return;
+void drawStarburst(int cx, int cy, int r) {
+  for (int a = 0; a < 360; a += 45) {
+    float rad = a * PI / 180.0;
+    u8g2.drawLine(cx, cy, cx + cos(rad) * r, cy + sin(rad) * r);
   }
+}
 
-  offlineAt=0;
-
-  if(!otaEnabled){
-    ArduinoOTA.setHostname("desk-companion");
-    ArduinoOTA.setPassword("admin123");
-    ArduinoOTA.begin();
-    otaEnabled=true;
+void drawOneEye(int cx, int cy, EyeShape shape) {
+  switch (shape) {
+    case EYE_DISC:
+      u8g2.drawDisc(cx, cy, 18);
+      u8g2.setDrawColor(0);
+      u8g2.drawDisc(cx + currentPupilX, cy + currentPupilY, 6);
+      u8g2.setDrawColor(1);
+      break;
+    case EYE_RING:
+      u8g2.drawCircle(cx, cy, 18);
+      u8g2.drawDisc(cx, cy, 5);
+      break;
+    case EYE_CLOSED_LINE:
+      u8g2.drawBox(cx - 16, cy - 2, 32, 4);
+      break;
+    case EYE_ELLIPSE:
+      u8g2.drawFilledEllipse(cx, cy, 18, 10);
+      break;
+    case EYE_HALF:
+      u8g2.drawBox(cx - 16, cy - 2, 32, 4);
+      u8g2.drawCircle(cx, cy + 4, 12);
+      break;
+    case EYE_X:
+      u8g2.drawLine(cx - 8, cy - 8, cx + 8, cy + 8);
+      u8g2.drawLine(cx - 8, cy + 8, cx + 8, cy - 8);
+      break;
+    case EYE_DOT_RING:
+      u8g2.drawCircle(cx, cy, 14);
+      u8g2.drawDisc(cx, cy, 3);
+      break;
+    case EYE_SQUINT:
+      u8g2.drawBox(cx - 18, cy - 4, 36, 8);
+      break;
   }
+}
 
-  if(!mdnsEnabled){
-    if(MDNS.begin("desk-companion")){
-      MDNS.addService("http","tcp",80);
-      mdnsEnabled=true;
-    }
-  }
-
-  if(apEnabled){
-    if(!onlineAt)onlineAt=millis();
-
-    if(millis()-onlineAt>=CLOSE_MS){
-      if(firstSetup){
-        prefs.putBool("provisioned",true);
-        firstSetup=false;
-        screen=0;
+void drawExtra(Extra ex, int lx, int rx, int ey) {
+  switch (ex) {
+    case EX_TEARS:
+      u8g2.drawFilledEllipse(lx - 6, ey + 22, 3, 8);
+      u8g2.drawFilledEllipse(rx + 6, ey + 22, 3, 8);
+      break;
+    case EX_SPARKLE:
+      drawStarburst(15, 15, 6);
+      drawStarburst(113, 15, 6);
+      break;
+    case EX_QMARK:
+      u8g2.setFont(u8g2_font_helvB10_tf);
+      u8g2.drawStr(60, 14, "?");
+      break;
+    case EX_EXCLAIM:
+      u8g2.setFont(u8g2_font_helvB10_tf);
+      u8g2.drawStr(60, 14, "!");
+      break;
+    case EX_SWEAT:
+      u8g2.drawFilledEllipse(rx + 20, ey - 10, 3, 6);
+      break;
+    case EX_HEARTS:
+      for (int i = 0; i < 2; i++) {
+        int cx = (i == 0) ? lx : rx;
+        u8g2.drawDisc(cx - 6, ey - 4, 5);
+        u8g2.drawDisc(cx + 6, ey - 4, 5);
+        u8g2.drawTriangle(cx - 10, ey - 2, cx + 10, ey - 2, cx, ey + 10);
       }
-      stopHotspot();
-    }
+      break;
+    case EX_SPIRAL:
+      u8g2.drawCircle(lx, ey, 6);
+      u8g2.drawCircle(rx, ey, 6);
+      break;
+    case EX_ZZZ:
+      u8g2.setFont(u8g2_font_helvB10_tf);
+      u8g2.drawStr(95, 14, "Z");
+      break;
+    case EX_BLUSH:
+      u8g2.drawFilledEllipse(lx - 2, ey + 16, 7, 3);
+      u8g2.drawFilledEllipse(rx + 2, ey + 16, 7, 3);
+      break;
+    case EX_NONE: default: break;
   }
 }
 
-// ====================================================
-// READABLE RESPONSIVE DASHBOARD
-// ====================================================
+void drawFace(Emotion e) {
+  int lx = 35, rx = 93, ey = 32;
+  EmotionParams p = EMO[e];
 
-const char DASHBOARD[] PROGMEM=R"HTML(
-<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#f7f8f6">
-<title>Desk-Companion | S3 Control Center</title>
-<style>
-:root{--bg:#f7f8f6;--card:#fff;--ink:#192923;
---sub:#7a8880;--line:#e2e9e3;
---accent:#176953;--soft:#eaf4ed}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);
-font:14px/1.5 system-ui,-apple-system,"Segoe UI",Arial;
-color:var(--ink)}
-button,input{font:inherit}
-button{cursor:pointer;background:#fff;border:1px solid var(--line);
-border-radius:9px;padding:11px 14px;color:#365448;font-weight:650}
-button:hover{background:var(--soft)}
-.primary{background:var(--accent);border-color:var(--accent);color:#fff}
-.layout{display:flex;min-height:100vh}
-aside{width:220px;flex-shrink:0;background:#fff;
-border-right:1px solid var(--line);padding:26px 18px}
-.brand{font-size:20px;font-weight:800;letter-spacing:-.7px}
-.mini{color:var(--sub);font-size:10px;letter-spacing:1.6px}
-nav{margin-top:35px}
-nav a{display:block;padding:12px;color:#64766c;
-text-decoration:none;border-radius:8px}
-nav a:hover{background:var(--soft)}
-main{width:100%;max-width:1200px;margin:auto;padding:32px}
-h1{font-size:27px;margin:0}h2{font-size:17px;margin:0 0 12px}
-p,small{color:var(--sub)}
-.top{display:flex;align-items:center;justify-content:space-between;gap:15px}
-.badge{background:#fff;border:1px solid var(--line);
-color:var(--accent);border-radius:30px;padding:9px 13px}
-.hero{background:#e9f0e9;border-radius:18px;padding:27px;
-margin:24px 0;display:flex;justify-content:space-between;
-align-items:center;gap:14px}
-.hero h2{font-size:28px;margin:6px 0}
-.face{width:110px;height:94px;background:#263f35;
-border:5px solid #547163;border-radius:22px;
-display:grid;place-content:center;gap:13px;transform:rotate(-5deg)}
-.eyes{display:flex;gap:25px}
-.eyes i{display:block;width:16px;height:23px;
-border-radius:15px;background:#c7f7d6}
-.smile{width:32px;height:11px;border-bottom:4px solid #c7f7d6;
-border-radius:50%;margin:auto}
-.metrics,.grid{display:grid;gap:15px;margin-bottom:16px;
-grid-template-columns:repeat(2,minmax(0,1fr))}
-.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
-.card{background:#fff;border:1px solid var(--line);
-border-radius:15px;padding:21px;min-width:0}
-.card small{display:block;font-size:12px}
-.value{font-size:18px;font-weight:750;margin-top:8px;overflow-wrap:anywhere}
-label{display:block;font-size:12px;font-weight:700;margin:13px 0 6px}
-input{display:block;width:100%;padding:11px;border:1px solid var(--line);
-border-radius:8px;outline:none}
-input:focus{border-color:var(--accent)}
-.controls{display:grid;grid-template-columns:1fr 1fr;gap:8px}
-.controls button.active{color:var(--accent);background:var(--soft);
-border-color:#a8d2b8}
-.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}
-.row{display:flex;justify-content:space-between;gap:15px;
-padding:11px 0;border-bottom:1px solid var(--line)}
-.row span{color:var(--sub)}
-.row b{text-align:right;overflow-wrap:anywhere}
-.options{display:none;max-height:180px;overflow:auto;
-border:1px solid var(--line);border-radius:8px}
-.options.show{display:block}
-.options button{display:block;width:100%;text-align:left;border:0}
-.scan{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
-.scan button{font-size:12px}
-#notice{font-size:12px;color:var(--accent);min-height:18px;margin:15px 0}
-footer{color:var(--sub);font-size:11px;margin-top:25px}
-@media(max-width:850px){aside{display:none}main{padding:18px}}
-@media(max-width:600px){.grid,.metrics{grid-template-columns:1fr}
-.hero h2{font-size:22px}.face{width:75px;height:70px}
-.eyes{gap:12px}.eyes i{width:10px;height:15px}}
-</style>
-</head>
-<body>
-<div class="layout">
-<aside>
-<div class="brand">Desk-Companion</div>
-<div class="mini">CONTROL CENTER</div>
-<nav>
-<a href="#overview">Overview</a>
-<a href="#display">Display</a>
-<a href="#device">Device</a>
-<a href="#network">Wi-Fi</a>
-<a href="#weather">Weather &amp; Time</a>
-</nav>
-</aside>
-<main id="overview">
-<div class="top"><div>
-<h1>Overview</h1><p>Manage your Desk-Companion.</p>
-</div><div class="badge" id="connection">Connecting...</div></div>
+  drawOneEye(lx, ey, p.eye);
+  drawOneEye(rx, ey, p.eye);
 
-<div class="hero"><div><small>MEET YOUR COMPANION</small>
-<h2>Hello, human.</h2><p>Your pocket-sized desk companion.</p>
-</div><div class="face"><div class="eyes"><i></i><i></i></div>
-<div class="smile"></div></div></div>
-
-<div class="metrics">
-<div class="card"><small>Network</small><div id="net" class="value">—</div></div>
-<div class="card"><small>Chip temperature</small><div id="temp" class="value">—</div></div>
-<div class="card"><small>Uptime</small><div id="uptime" class="value">—</div></div>
-</div>
-
-<div class="grid">
-<section class="card" id="display">
-<h2>Display controls</h2><p>Choose what appears on the OLED.</p>
-<div class="controls">
-<button data-screen="0">Emotions</button>
-<button data-screen="1">Clock</button>
-<button data-screen="2">Weather</button>
-<button data-screen="3">Forecast</button>
-</div>
-<label>Search 66 emotions</label>
-<input id="emotionSearch" placeholder="Search an emotion..." autocomplete="off">
-<div class="options" id="emotionOptions"></div>
-<small id="emotionMode">Automatic emotions</small>
-<div class="actions"><button id="next">Next screen</button>
-<button id="sleep">Sleep</button></div>
-</section>
-
-<section class="card" id="device"><h2>Device information</h2>
-<div class="row"><span>Board</span><b>XIAO ESP32-S3</b></div>
-<div class="row"><span>Hotspot</span><b id="ap">—</b></div>
-<div class="row"><span>Hotspot status</span><b id="apStatus">—</b></div>
-<div class="row"><span>Local IP</span><b id="ip">—</b></div>
-<div class="row"><span>Emotion</span><b id="emo">—</b></div>
-<div class="actions"><button id="refresh">Refresh</button>
-<button id="restart">Restart</button></div>
-</section></div>
-
-<div class="grid" id="network">
-<section class="card"><h2>Primary Wi-Fi</h2>
-<form id="wifiForm"><button id="scan1" type="button">Scan Wi-Fi</button>
-<div class="scan" id="networks1"></div>
-<label>SSID</label><input id="ssid1" maxlength="32" required>
-<label>Password</label><input id="pass1" type="password"
-placeholder="Leave blank to keep existing">
-<button class="primary">Save primary network</button></form></section>
-
-<section class="card"><h2>Secondary Wi-Fi</h2>
-<form id="backupForm"><button id="scan2" type="button">Scan Wi-Fi</button>
-<div class="scan" id="networks2"></div>
-<label>SSID</label><input id="ssid2" maxlength="32" required>
-<label>Password</label><input id="pass2" type="password"
-placeholder="Leave blank to keep existing">
-<button class="primary">Save backup network</button></form></section>
-</div>
-
-<section class="card" id="weather"><h2>Weather &amp; time</h2>
-<p>Enter your city, state and country.</p>
-<form id="weatherForm">
-<label>City</label><input id="city" required>
-<label>State / Province</label><input id="state" required>
-<label>Country</label><input id="country" required>
-<label>OpenWeatherMap API key</label>
-<input id="key" type="password" placeholder="Leave blank to keep existing">
-<button class="primary">Save weather settings</button>
-</form></section>
-
-<div id="notice"></div>
-<footer>Desk-Companion · Robonavigators · Local control</footer>
-</main></div>
-
-<script>
-const $=id=>document.getElementById(id);
-const emotions="Neutral,Happy,Sad,Angry,Surprised,Sleepy,Love,Wink,Confused,Scared,Bored,Excited,Crying,Laughing,Suspicious,Dizzy,Sick,Cool,Shocked,Annoyed,Curious,Thinking,Embarrassed,Proud,Worried,Blink,Jealous,Grumpy,Mischievous,Shy,Nervous,Ecstatic,Frustrated,Hopeful,Grateful,Nostalgic,Determined,Playful,Sarcastic,Smug,Guilty,Relieved,Anxious,Content,Irritated,Amused,Skeptical,Horrified,Peaceful,Starstruck,Drowsy,Puzzled,Devious,Humble,Optimistic,Pessimistic,Focused,Daydreaming,Miserable,Cheeky,Alert,Calm,Furious,Tearful,Hysterical,Smitten".split(",");
-let device={},initialized=false,busy=false;
-function notice(t,error=false){
-$("notice").textContent=t;
-$("notice").style.color=error?"#b64f49":"#176953"}
-async function post(path,data={}){
-const r=await fetch(path,{method:"POST",
-headers:{"Content-Type":"application/x-www-form-urlencoded"},
-body:new URLSearchParams(data)});
-const j=await r.json();
-if(!r.ok)throw Error(j.error||"Request failed");
-notice(j.message||"Saved");return j}
-async function action(path,data={}){
-try{await post(path,data);await status()}
-catch(e){notice(e.message,true)}}
-async function status(){
-if(busy)return;busy=true;
-try{
-const r=await fetch("/api/status",{cache:"no-store"});
-if(!r.ok)throw Error("Offline");
-device=await r.json();
-$("connection").textContent="Online";
-$("net").textContent=device.wifiConnected?device.ssid:"Offline / AP";
-$("temp").textContent=Number(device.cpuTempC).toFixed(1)+"°C";
-$("uptime").textContent=Math.floor(device.uptime/3600)+"h "+
-(Math.floor(device.uptime/60)%60)+"m";
-$("ap").textContent=device.ap;
-$("apStatus").textContent=device.apActive?"ON":"OFF";
-$("ip").textContent=device.ip;
-$("emo").textContent=emotions[device.emotion]||"—";
-$("emotionMode").textContent=device.manualEmotion?
-"Manual: "+emotions[device.emotion]:"Automatic — all 66 emotions";
-document.querySelectorAll("[data-screen]").forEach(b=>
-b.classList.toggle("active",Number(b.dataset.screen)===device.screen));
-if(!initialized){
-$("ssid1").value=device.savedSSID||"";
-$("ssid2").value=device.savedSSID2||"";
-$("city").value=device.city||"";
-$("state").value=device.state||"";
-$("country").value=device.country||"";
-initialized=true}
-}catch(e){$("connection").textContent="Offline"}
-finally{busy=false}}
-document.querySelectorAll("[data-screen]").forEach(b=>
-b.onclick=()=>action("/api/screen",{screen:b.dataset.screen}));
-$("next").onclick=()=>action("/api/screen",{screen:(device.screen+1)%4});
-$("refresh").onclick=status;
-$("sleep").onclick=()=>{if(confirm("Put Desk-Companion to sleep?"))
-action("/api/sleep")};
-$("restart").onclick=()=>{if(confirm("Restart Desk-Companion?"))
-action("/api/restart")};
-$("wifiForm").onsubmit=e=>{e.preventDefault();
-action("/api/wifi",{ssid:$("ssid1").value,password:$("pass1").value})};
-$("backupForm").onsubmit=e=>{e.preventDefault();
-action("/api/wifi2",{ssid:$("ssid2").value,password:$("pass2").value})};
-$("weatherForm").onsubmit=e=>{e.preventDefault();
-action("/api/weather",{city:$("city").value,state:$("state").value,
-country:$("country").value,apiKey:$("key").value})};
-function showEmotions(){
-const q=$("emotionSearch").value.toLowerCase();
-const box=$("emotionOptions");
-box.replaceChildren();box.classList.add("show");
-[{name:"Automatic — all 66 emotions",id:-1},
-...emotions.map((name,id)=>({name,id}))].filter(x=>
-x.name.toLowerCase().includes(q)).forEach(x=>{
-const b=document.createElement("button");
-b.textContent=x.name;
-b.onclick=()=>{box.classList.remove("show");
-$("emotionSearch").value="";
-action("/api/emotion",{emotion:x.id})};
-box.appendChild(b)})}
-$("emotionSearch").oninput=showEmotions;
-$("emotionSearch").onfocus=showEmotions;
-document.addEventListener("click",e=>{
-if(e.target!==$("emotionSearch")&&
-!$("emotionOptions").contains(e.target))
-$("emotionOptions").classList.remove("show")});
-async function scan(target,input){
-const box=$(target);box.textContent="Scanning...";
-try{
-const r=await fetch("/api/wifi/scan");
-const j=await r.json();
-box.replaceChildren();
-(j.networks||[]).forEach(n=>{
-const b=document.createElement("button");
-b.type="button";b.textContent=n.ssid+" ("+n.rssi+" dBm)";
-b.onclick=()=>{$(input).value=n.ssid;box.replaceChildren()};
-box.appendChild(b)})}
-catch(e){box.textContent="Scan failed"}}
-$("scan1").onclick=()=>scan("networks1","ssid1");
-$("scan2").onclick=()=>scan("networks2","ssid2");
-status();setInterval(status,4000);
-</script>
-</body>
-</html>
-)HTML";
-
-// ====================================================
-// WEB API
-// ====================================================
-
-void respond(int code,String message,bool error=false){
-  JsonDocument d;
-  d[error?"error":"message"]=message;
-  String output;serializeJson(d,output);
-  web.send(code,"application/json",output);
-}
-
-void portalRedirect(){
-  if(!apEnabled){
-    web.send(404,"text/plain","Not found");
-    return;
-  }
-  web.sendHeader("Location","http://192.168.4.1/",true);
-  web.send(302,"text/plain","Desk-Companion setup");
-}
-
-void setupWeb(){
-  web.on("/",HTTP_GET,[](){
-    web.sendHeader("Cache-Control","no-store");
-    web.send_P(200,"text/html; charset=utf-8",DASHBOARD);
-  });
-
-  web.on("/generate_204",HTTP_GET,portalRedirect);
-  web.on("/gen_204",HTTP_GET,portalRedirect);
-  web.on("/hotspot-detect.html",HTTP_GET,portalRedirect);
-  web.on("/ncsi.txt",HTTP_GET,portalRedirect);
-  web.on("/connecttest.txt",HTTP_GET,portalRedirect);
-
-  web.on("/api/status",HTTP_GET,[](){
-    JsonDocument d;
-    bool connected=WiFi.status()==WL_CONNECTED;
-    d["wifiConnected"]=connected;
-    d["ssid"]=connected?WiFi.SSID():"";
-    d["savedSSID"]=wifi1;
-    d["savedSSID2"]=wifi2;
-    d["ap"]=hotspot;
-    d["apActive"]=apEnabled;
-    d["ip"]=connected?WiFi.localIP().toString():
-      WiFi.softAPIP().toString();
-    d["uptime"]=millis()/1000;
-    d["screen"]=screen;
-    d["emotion"]=emotion;
-    d["manualEmotion"]=manualEmotion;
-    d["cpuTempC"]=temperatureRead();
-    d["city"]=city;
-    d["state"]=stateName;
-    d["country"]=country;
-    String output;serializeJson(d,output);
-    web.sendHeader("Cache-Control","no-store");
-    web.send(200,"application/json",output);
-  });
-
-  web.on("/api/wifi/scan",HTTP_GET,[](){
-    int count=WiFi.scanNetworks(false,true);
-    if(count<0){respond(503,"Scan failed",true);return;}
-    JsonDocument d;
-    JsonArray arr=d["networks"].to<JsonArray>();
-    for(int i=0;i<count && i<24;i++){
-      String name=WiFi.SSID(i);
-      if(name.isEmpty())continue;
-      bool found=false;
-      for(JsonObject n:arr)
-        if(n["ssid"].as<String>()==name)found=true;
-      if(found)continue;
-      JsonObject n=arr.add<JsonObject>();
-      n["ssid"]=name;n["rssi"]=WiFi.RSSI(i);
-      n["secure"]=WiFi.encryptionType(i)!=WIFI_AUTH_OPEN;
-    }
-    WiFi.scanDelete();
-    String output;serializeJson(d,output);
-    web.send(200,"application/json",output);
-  });
-
-  web.on("/api/screen",HTTP_POST,[](){
-    int value=web.arg("screen").toInt();
-    if(value<0 || value>3){
-      respond(400,"Invalid screen",true);return;
-    }
-    screen=value;
-    respond(200,"Screen updated");
-  });
-
-  web.on("/api/emotion",HTTP_POST,[](){
-    int value=web.arg("emotion").toInt();
-    if(value< -1 || value>=EMOTION_COUNT){
-      respond(400,"Invalid emotion",true);return;
-    }
-    manualEmotion=value>=0;
-    if(manualEmotion)emotion=value;
-    screen=0;emotionAt=millis();
-    respond(200,manualEmotion?
-      "Emotion changed":"Automatic emotions enabled");
-  });
-
-  web.on("/api/wifi",HTTP_POST,[](){
-    String s=web.arg("ssid"),p=web.arg("password");
-    s.trim();
-    if(s.isEmpty() || s.length()>32 || p.length()>63 ||
-       (p.length()>0 && p.length()<8)){
-      respond(400,"Invalid Wi-Fi settings",true);return;
-    }
-    if(s!=wifi1 && p.isEmpty()){
-      respond(400,"Enter new network password",true);return;
-    }
-    wifi1=s;
-    if(p.length())password1=p;
-    prefs.putString("wifiSSID",wifi1);
-    prefs.putString("wifiPass",password1);
-    respond(200,"Wi-Fi saved; connecting");
-    onlineAt=0;backupNext=false;
-    connectWiFi(false);
-  });
-
-  web.on("/api/wifi2",HTTP_POST,[](){
-    String s=web.arg("ssid"),p=web.arg("password");
-    s.trim();
-    if(s.isEmpty() || s.length()>32 || p.length()>63 ||
-       (p.length()>0 && p.length()<8)){
-      respond(400,"Invalid backup Wi-Fi",true);return;
-    }
-    if(s!=wifi2 && p.isEmpty()){
-      respond(400,"Enter backup password",true);return;
-    }
-    wifi2=s;
-    if(p.length())password2=p;
-    prefs.putString("wifiSSID2",wifi2);
-    prefs.putString("wifiPass2",password2);
-    respond(200,"Backup Wi-Fi saved");
-    if(WiFi.status()!=WL_CONNECTED){
-      retryAt=millis()-RETRY_MS;
-      backupNext=true;
-    }
-  });
-
-  web.on("/api/weather",HTTP_POST,[](){
-    String c=web.arg("city");
-    String s=web.arg("state");
-    String co=web.arg("country");
-    String key=web.arg("apiKey");
-    c.trim();s.trim();co.trim();key.trim();
-
-    if(c.isEmpty() || s.isEmpty() || co.isEmpty()){
-      respond(400,"Enter city, state and country",true);
-      return;
-    }
-    if(c.length()>64 || s.length()>64 ||
-       co.length()>64 || key.length()>128){
-      respond(400,"Field too long",true);return;
-    }
-    if(key.isEmpty())key=weatherKey;
-    if(key.isEmpty()){
-      respond(400,"API key required",true);return;
-    }
-    float a,b;
-    if(!locate(c,s,co,key,a,b)){
-      respond(422,"Location not found or internet unavailable",true);
-      return;
-    }
-    city=c;stateName=s;country=co;weatherKey=key;
-    latitude=a;longitude=b;weatherEnabled=true;
-    prefs.putString("city",city);
-    prefs.putString("state",stateName);
-    prefs.putString("country",country);
-    prefs.putString("weatherKey",weatherKey);
-    prefs.putFloat("lat",latitude);
-    prefs.putFloat("lon",longitude);
-    prefs.putBool("located",true);
-    weatherAt=0;
-    respond(200,"Weather saved");
-  });
-
-  web.on("/api/sleep",HTTP_POST,[](){
-    respond(200,"Going to sleep");
-    sleeping=true;sleepAt=millis();
-    oled.clearBuffer();
-    oled.setFont(u8g2_font_helvB10_tf);
-    centerText("Going to Sleep",35);
-    oled.sendBuffer();
-  });
-
-  web.on("/api/restart",HTTP_POST,[](){
-    respond(200,"Restarting");
-    delay(300);
-    ESP.restart();
-  });
-
-  web.onNotFound([](){
-    if(web.uri().startsWith("/api/"))
-      web.send(404,"application/json",
-        "{\"error\":\"Unknown endpoint\"}");
-    else portalRedirect();
-  });
-}
-
-// ====================================================
-// TOUCH AND DEEP SLEEP
-// ====================================================
-
-void handleTouch(){
-  bool high=digitalRead(TOUCH_PIN)==HIGH;
-
-  if(high && !pressed){
-    pressed=true;
-    pressAt=millis();
-    longDone=false;
+  if (p.showBrow) {
+    drawEyebrow(lx, ey - 20, 22, p.browTiltL);
+    drawEyebrow(rx, ey - 20, 22, p.browTiltR);
   }
 
-  if(high && pressed && !longDone &&
-     millis()-pressAt>1500){
-    longDone=true;
-    sleeping=true;
-    sleepAt=millis();
-    oled.clearBuffer();
-    oled.setFont(u8g2_font_helvB10_tf);
-    centerText("Going to Sleep",35);
-    oled.sendBuffer();
-  }
+  if (p.mouthWidth > 0) drawMouthCurve(64, 52, p.mouthWidth, p.mouthAmp);
 
-  if(!high && pressed){
-    pressed=false;
-    if(!longDone && millis()-pressAt>50){
-      manualEmotion=false;
-      screen=(screen+1)%4;
-    }
+  drawExtra(p.extra, lx, rx, ey);
+}
+
+void updateEmotion() {
+  if (!manualEmotion && millis() - lastEmotionChange > emotionHoldTime) {
+    Emotion next;
+    do {
+      next = (Emotion)random(0, EMOTION_COUNT);
+    } while (next == currentEmotion);
+    currentEmotion = next;
+    lastEmotionChange = millis();
+    emotionHoldTime = random(3000, 8000);
   }
 }
 
-void enterDeepSleep(){
-  oled.clearBuffer();
-  oled.sendBuffer();
-  oled.setPowerSave(1);
-  WiFi.disconnect(true);
-  WiFi.mode(WIFI_OFF);
-
-  // ESP32-S3 uses RTC EXT0 wakeup on GPIO9.
-  esp_sleep_enable_ext0_wakeup(
-    GPIO_NUM_9,
-    1
-  );
-
-  esp_deep_sleep_start();
+// ---------- Startup Screen ----------
+void drawStartupScreen() {
+  // Same Logisoso16 font used by the original Desk Buddy startup animation.
+  // Two lines prevent the longer new project name from overflowing the OLED.
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_logisoso16_tf);
+  const char* title1 = "DESK";
+  const char* title2 = "COMPANION";
+  u8g2.drawStr((128 - u8g2.getStrWidth(title1)) / 2, 27, title1);
+  u8g2.drawStr((128 - u8g2.getStrWidth(title2)) / 2, 54, title2);
+  u8g2.sendBuffer();
 }
 
-// ====================================================
-// SETUP
-// ====================================================
+void drawFirstTimeSetupScreen() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.drawStr(0, 10, "SETUP REQUIRED");
+  u8g2.drawHLine(0, 13, 128);
+  u8g2.drawStr(0, 24, "Connect to:");
+  u8g2.drawStr(0, 36, "Desk-Companion-");
+  u8g2.drawStr(92, 36, apSSID.substring(apSSID.length() - 4).c_str());
+  u8g2.drawStr(0, 49, "Open 192.168.4.1");
+  u8g2.drawStr(0, 61, "Waiting for Wi-Fi...");
+  u8g2.sendBuffer();
+}
 
-void setup(){
+void drawWiFiRecoveryScreen() {
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.drawStr(0, 10, "WI-FI RECOVERY");
+  u8g2.drawHLine(0, 13, 128);
+  u8g2.drawStr(0, 24, "Connect to:");
+  u8g2.drawStr(0, 36, "Desk-Companion-");
+  u8g2.drawStr(92, 36, apSSID.substring(apSSID.length() - 4).c_str());
+  u8g2.drawStr(0, 49, "Open 192.168.4.1");
+  u8g2.drawStr(0, 61, "Retrying saved Wi-Fi");
+  u8g2.sendBuffer();
+}
+
+void setup() {
   Serial.begin(115200);
-
-  pinMode(TOUCH_PIN,INPUT_PULLDOWN);
-
-  // Onboard XIAO ESP32-S3 user LED: active LOW.
-  pinMode(LED_PIN,OUTPUT);
-  digitalWrite(LED_PIN,LOW);
-
-  Wire.begin();
-  oled.begin();
-  oled.setBusClock(400000);
-  oled.setDrawColor(1);
-
-  startupScreen();
+  pinMode(TTP_PIN, INPUT_PULLDOWN);
+  // XIAO ESP32-S3 user LED is active LOW on GPIO21.
+  pinMode(21, OUTPUT);
+  digitalWrite(21, LOW);
+  u8g2.begin();
+  u8g2.setBusClock(400000);
+  u8g2.setDrawColor(1);
+  drawStartupScreen();
   delay(1200);
 
-  prefs.begin("deskbuddy",false);
+  prefs.begin("deskbuddy", false); // Legacy NVS namespace retained to preserve existing saved settings
+  wifiSSID = prefs.getString("wifiSSID", "");
+  wifiPassword = prefs.getString("wifiPass", "");
+  wifiSSID2 = prefs.getString("wifiSSID2", "");
+  wifiPassword2 = prefs.getString("wifiPass2", "");
+  setupRequired = !prefs.getBool("provisioned", false) || (wifiSSID.isEmpty() && wifiSSID2.isEmpty());
+  // A saved SSID is not enough: first setup finishes only on a successful connection.
+  weatherKey = prefs.getString("weatherKey", "");
+  cityLabel = prefs.getString("city", "");
+  locationState = prefs.getString("state", "");
+  locationCountry = prefs.getString("country", "");
+  weatherLat = prefs.getFloat("lat", 0.0f);
+  weatherLon = prefs.getFloat("lon", 0.0f);
+  utcOffsetSeconds = prefs.getInt("utcOffset", 0);
+  weatherConfigured = weatherKey.length() > 0 && cityLabel.length() > 0 && locationState.length() > 0 && locationCountry.length() > 0 && prefs.getBool("located", false);
+  timeClient.setTimeOffset(utcOffsetSeconds);
 
-  wifi1=prefs.getString("wifiSSID","");
-  password1=prefs.getString("wifiPass","");
-  wifi2=prefs.getString("wifiSSID2","");
-  password2=prefs.getString("wifiPass2","");
+  // Start setup AP only when provisioning is needed. Use the LAST FOUR hexadecimal characters
+  // of the STA Wi-Fi MAC address (the last two bytes as displayed).
+  // For example, AA:BB:CC:DD:57:B9 -> Desk-Companion-57B9.
+  // WiFi.mode() must initialize the Wi-Fi interface before reading its MAC.
+  WiFi.mode(setupRequired ? WIFI_AP_STA : WIFI_STA);
+  uint8_t staMacBytes[6] = {0};
+  esp_read_mac(staMacBytes, ESP_MAC_WIFI_STA);
+  char macSuffix[5];
+  snprintf(macSuffix, sizeof(macSuffix), "%02X%02X", staMacBytes[4], staMacBytes[5]);
+  apSSID = "Desk-Companion-" + String(macSuffix);
 
-  firstSetup=!prefs.getBool("provisioned",false) ||
-    (wifi1.isEmpty() && wifi2.isEmpty());
-
-  weatherKey=prefs.getString("weatherKey","");
-  city=prefs.getString("city","");
-  stateName=prefs.getString("state","");
-  country=prefs.getString("country","");
-  latitude=prefs.getFloat("lat",0);
-  longitude=prefs.getFloat("lon",0);
-  utcOffset=prefs.getLong("utcOffset",0);
-
-  weatherEnabled=!weatherKey.isEmpty() &&
-    !city.isEmpty() && !stateName.isEmpty() &&
-    !country.isEmpty() && prefs.getBool("located",false);
-
-  ntp.setTimeOffset(utcOffset);
-
-  WiFi.mode(firstSetup?WIFI_AP_STA:WIFI_STA);
-
-  uint8_t mac[6]={0};
-  esp_read_mac(mac,ESP_MAC_WIFI_STA);
-  char suffix[5];
-  snprintf(suffix,sizeof(suffix),"%02X%02X",mac[4],mac[5]);
-  hotspot="Desk-Companion-"+String(suffix);
-
-  if(firstSetup){
-    startHotspot();
-    setupScreen(false);
+  // OTA password; dashboard itself does not require a login.
+  adminSecret = "admin123";
+  Serial.println("Station MAC: " + WiFi.macAddress());
+  if (setupRequired) startRecoveryAP();
+  wifiOfflineSince = millis();  // First outage window starts after boot.
+  if (wifiSSID.length()) WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+  else if (wifiSSID2.length()) WiFi.begin(wifiSSID2.c_str(), wifiPassword2.c_str());
+  setupWebServer();
+  server.begin();
+  portalReady = true;
+  if (setupRequired) {
+    Serial.println("Desk-Companion setup network: " + apSSID);
+    Serial.println("Setup hotspot: OPEN (no password)");
+    Serial.println("Hotspot dashboard: http://192.168.4.1/");
+  } else {
+    Serial.println("Already configured: setup AP is OFF");
   }
+  Serial.println("On home/classroom Wi-Fi: http://desk-companion.local/ (if mDNS is supported)");
+  // Display the setup instructions until the first Wi-Fi connection succeeds.
+  // On configured devices, the startup logo transitions directly to emotions.
+  if (setupRequired) drawFirstTimeSetupScreen();
 
-  setupWeb();
-  web.begin();
-
-  if(!wifi1.isEmpty())connectWiFi(false);
-  else if(!wifi2.isEmpty())connectWiFi(true);
-
-  offlineAt=millis();
-  ntp.begin();
+  timeClient.begin();
+  bootTime = millis();
   randomSeed(esp_random());
-  emotionAt=millis();
-
-  Serial.println("Desk-Companion XIAO ESP32-S3");
-  Serial.println("OTA password: admin123");
-  Serial.println("Hotspot: "+hotspot);
 }
 
-// ====================================================
-// MAIN LOOP
-// ====================================================
-
-void loop(){
-  if(apEnabled)dns.processNextRequest();
-  web.handleClient();
-
-  if(sleeping){
-    if(millis()-sleepAt>=4000)enterDeepSleep();
-    return;
-  }
-
-  manageConnection();
-
-  if(WiFi.status()==WL_CONNECTED){
-    if(otaEnabled)ArduinoOTA.handle();
-    ntp.update();
-  }
-
-  if(firstSetup){
-    if(millis()-frameAt>=1000){
-      frameAt=millis();
-      setupScreen(false);
+void loop() {
+  if (recoveryAPActive) captiveDns.processNextRequest(); // Setup or Wi-Fi recovery.
+  server.handleClient();
+  if (isGoingToSleep) {
+    if (millis() - sleepTimer >= 4000) {
+      u8g2.clearBuffer(); u8g2.sendBuffer(); u8g2.setPowerSave(1);
+      esp_sleep_enable_ext0_wakeup(static_cast<gpio_num_t>(TTP_PIN), 1);
+      esp_deep_sleep_start();
     }
     return;
   }
 
-  if(apEnabled && WiFi.status()!=WL_CONNECTED){
-    if(millis()-frameAt>=1000){
-      frameAt=millis();
-      setupScreen(true);
+  // Try the preferred network, then the backup every 15 seconds when disconnected.
+  // During initial provisioning, the AP stays on until a connection succeeds.
+  if (WiFi.status() != WL_CONNECTED && (wifiSSID.length() || wifiSSID2.length()) &&
+      millis() - lastWiFiAttempt >= WIFI_RETRY_MS) {
+    lastWiFiAttempt = millis();
+    const bool useBackup = (trySecondaryNext && wifiSSID2.length()) || !wifiSSID.length();
+    WiFi.disconnect(false);
+    if (useBackup) WiFi.begin(wifiSSID2.c_str(), wifiPassword2.c_str());
+    else WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+    trySecondaryNext = !trySecondaryNext;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!otaStarted) {
+      ArduinoOTA.setHostname("desk-companion");
+      ArduinoOTA.setPassword(adminSecret.c_str());
+      ArduinoOTA.begin();
+      // mDNS allows http://desk-companion.local/ on the same local Wi-Fi.
+      // Captive-portal hotspot users can always use http://192.168.4.1/.
+      if (MDNS.begin("desk-companion")) {
+        MDNS.addService("http", "tcp", 80);
+        Serial.println("Local dashboard: http://desk-companion.local/");
+      } else {
+        Serial.println("mDNS startup failed; use the device IP address");
+      }
+      otaStarted = true;
+    }
+    ArduinoOTA.handle();
+    timeClient.update();
+  }
+
+  // After provisioning, recover access if BOTH saved networks stay unreachable.
+  // Keep retrying station Wi-Fi every 15 seconds even while AP is running.
+  if (!setupRequired) {
+    if (WiFi.status() != WL_CONNECTED) {
+      recoveryConnectedSince = 0;
+      if (wifiOfflineSince == 0) wifiOfflineSince = millis();
+      if (!recoveryAPActive && millis() - wifiOfflineSince >= WIFI_RECOVERY_DELAY_MS)
+        startRecoveryAP();
+    } else {
+      wifiOfflineSince = 0;
+      if (recoveryAPActive) {
+        if (recoveryConnectedSince == 0) recoveryConnectedSince = millis();
+        // Give the dashboard time to finish responding to a saved Wi-Fi change.
+        if (millis() - recoveryConnectedSince >= SETUP_FINISH_DELAY_MS)
+          stopRecoveryAP();
+      } else {
+        recoveryConnectedSince = 0;
+      }
+    }
+  }
+
+  // Keep setup visible until a real Wi-Fi connection succeeds. Saving SSID
+  // alone must NOT close the portal; bad credentials must be fixable.
+  if (setupRequired) {
+    if (WiFi.status() == WL_CONNECTED) {
+      if (setupConnectedAt == 0) setupConnectedAt = millis();
+      if (millis() - setupConnectedAt >= SETUP_FINISH_DELAY_MS) {
+        prefs.putBool("provisioned", true);
+        setupRequired = false;
+        displayState = 0;
+        stopRecoveryAP();
+        wifiOfflineSince = 0;
+        Serial.println("Setup complete: AP disabled; dashboard on station Wi-Fi");
+      }
+    } else {
+      setupConnectedAt = 0;
+    }
+    if (setupRequired) {
+      if (millis() - lastFrameTime >= 1000) {
+        lastFrameTime = millis();
+        drawFirstTimeSetupScreen();
+      }
+      return;
+    }
+  }
+
+  // During an active Wi-Fi outage, keep recovery instructions visible.
+  if (recoveryAPActive && WiFi.status() != WL_CONNECTED) {
+    if (millis() - lastFrameTime >= 1000) {
+      lastFrameTime = millis();
+      drawWiFiRecoveryScreen();
     }
     return;
   }
 
   handleTouch();
-  if(sleeping)return;
+  if (isGoingToSleep) return;
+  if (WiFi.status() == WL_CONNECTED && weatherConfigured &&
+      (millis() - lastWeatherUpdate > 900000 || lastWeatherUpdate == 0)) {
+    fetchWeather(); fetchForecast(); lastWeatherUpdate = millis();
+  }
+  displayedTemp += (currentTemp - displayedTemp) * 0.08;
+  if (fabs(currentTemp - displayedTemp) < 0.05) displayedTemp = currentTemp;
 
-  if(WiFi.status()==WL_CONNECTED && weatherEnabled &&
-     (!weatherAt || millis()-weatherAt>=WEATHER_MS)){
-    getCurrentWeather();
-    getForecast();
-    weatherAt=millis();
+  if (millis() - lastFrameTime >= FRAME_DELAY) {
+    lastFrameTime = millis();
+    u8g2.clearBuffer();
+    time_t epochTime = timeClient.getEpochTime();
+    struct tm *ptm = gmtime(&epochTime);
+    if (displayState == 0) {
+      updateEmotion();
+      if (currentEmotion == NEUTRAL && millis() - lastEyeUpdate >= 15) {
+        if (currentPupilX < targetPupilX) currentPupilX++;
+        else if (currentPupilX > targetPupilX) currentPupilX--;
+        if (currentPupilY < targetPupilY) currentPupilY++;
+        else if (currentPupilY > targetPupilY) currentPupilY--;
+        lastEyeUpdate = millis();
+        if (currentPupilX == targetPupilX && currentPupilY == targetPupilY) {
+          if (millis() - lastEyePause > eyePauseDuration) {
+            int r = random(0, 6);
+            if (r == 0) { targetPupilX = 0; targetPupilY = 0; }
+            else if (r == 1) { targetPupilX = -9; targetPupilY = 0; }
+            else if (r == 2) { targetPupilX = 9; targetPupilY = 0; }
+            else if (r == 3) { targetPupilX = 0; targetPupilY = -9; }
+            else if (r == 4) { targetPupilX = 0; targetPupilY = 9; }
+            else { targetPupilX = random(-6, 7); targetPupilY = random(-6, 7); }
+            eyePauseDuration = random(1000, 3500); lastEyePause = millis();
+          }
+        } else lastEyePause = millis();
+      }
+      drawFace(currentEmotion);
+    } else if (displayState == 1) drawTimeScreen(ptm);
+    else if (displayState == 2) drawCurrentWeather();
+    else if (displayState == 3) drawForecastScreen();
+    u8g2.sendBuffer();
+  }
+}
+
+// --- Touch Input & Deep Sleep Trigger ---
+void handleTouch() {
+  bool btnState = digitalRead(TTP_PIN);
+
+  if (btnState == HIGH && !isPressing) {
+    isPressing = true;
+    btnPressTime = millis();
+    longPressHandled = false;
   }
 
-  shownTemp+=(temperature-shownTemp)*0.08f;
-
-  if(millis()-frameAt<FRAME_MS)return;
-  frameAt=millis();
-
-  oled.clearBuffer();
-
-  switch(screen){
-    case 0:drawFace();break;
-    case 1:drawClock();break;
-    case 2:drawWeather();break;
-    case 3:drawForecast();break;
+  if (btnState == HIGH && isPressing) {
+    if (!longPressHandled && millis() - btnPressTime > 1500) {
+      longPressHandled = true;
+      triggerDeepSleep();
+    }
   }
 
-  oled.sendBuffer();
+  if (btnState == LOW && isPressing) {
+    isPressing = false;
+    if (!longPressHandled && millis() - btnPressTime > 50) { 
+      manualEmotion = false;
+      displayState++;
+      if (displayState > 3) displayState = 0; 
+    }
+  }
+}
+
+void triggerDeepSleep() {
+  isGoingToSleep = true; 
+  sleepTimer = millis();
+  
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_helvB10_tf);
+  int w = u8g2.getStrWidth("Going to Sleep Zzz");
+  u8g2.drawStr((128 - w) / 2, 35, "Going to Sleep Zzz");
+  u8g2.sendBuffer();
+
+}
+
+// --- Time Screen ---
+void drawTimeScreen(struct tm *ptm) {
+  String dateStr = days[timeClient.getDay()] + ", " + String(ptm->tm_mday) + " " + months[ptm->tm_mon];
+  u8g2.setFont(u8g2_font_helvR08_tf);
+  int dateWidth = u8g2.getStrWidth(dateStr.c_str());
+  u8g2.drawStr((128 - dateWidth) / 2, 12, dateStr.c_str());
+
+  int currentHour = ptm->tm_hour;
+  int currentMin = ptm->tm_min;
+  String amPmStr = (currentHour >= 12) ? "PM" : "AM";
+  if (currentHour == 0) currentHour = 12;
+  else if (currentHour > 12) currentHour -= 12;
+  
+  String timeStr = (currentHour < 10 ? "0" : "") + String(currentHour) + ":" + (currentMin < 10 ? "0" : "") + String(currentMin);
+  
+  u8g2.setFont(u8g2_font_logisoso28_tn); 
+  int timeWidth = u8g2.getStrWidth(timeStr.c_str());
+  
+  u8g2.setFont(u8g2_font_helvB08_tf); 
+  int amPmWidth = u8g2.getStrWidth(amPmStr.c_str());
+  
+  int startX = (128 - (timeWidth + 2 + amPmWidth)) / 2;
+  
+  u8g2.setFont(u8g2_font_logisoso28_tn); 
+  u8g2.drawStr(startX, 50, timeStr.c_str());
+  u8g2.setFont(u8g2_font_helvB08_tf); 
+  u8g2.drawStr(startX + timeWidth + 2, 50, amPmStr.c_str());
+}
+
+// Custom mist symbol: three fog lines, independent of font glyph availability.
+const uint16_t WEATHER_ICON_MIST = 255;
+void drawMistIcon(int x, int y, bool small) {
+  int width = small ? 17 : 30;
+  int gap = small ? 4 : 7;
+  for (int i = 0; i < 3; i++) {
+    int offset = (i == 1) ? 4 : 0;
+    u8g2.drawHLine(x + offset, y + i * gap, width - offset);
+    if (!small) u8g2.drawHLine(x + offset, y + i * gap + 1, width - offset);
+  }
+}
+
+// --- Weather Screen (u8g2 port of the reference layout, smoothed temp) ---
+void drawCurrentWeather() {
+  // 1. HEADER (Location)
+  u8g2.setFont(u8g2_font_helvR08_tf);
+  int locW = u8g2.getStrWidth(cityLabel.c_str());
+  u8g2.drawStr((128 - locW) / 2, 9, cityLabel.c_str());
+  u8g2.drawHLine(0, 12, 128);
+
+  // 2. MAIN BODY (Temp & Icon)
+  u8g2.setFont(u8g2_font_logisoso22_tn);
+  char tempBuf[4];
+  int roundedTemp = (int)round(displayedTemp);
+  snprintf(tempBuf, sizeof(tempBuf), "%d", roundedTemp);
+  u8g2.drawStr(5, 40, tempBuf);
+  int tempW = u8g2.getStrWidth(tempBuf);
+
+  int degX = 5 + tempW + 6;
+  u8g2.drawCircle(degX, 20, 3);
+  u8g2.drawCircle(degX, 20, 2);
+
+  u8g2.setFont(u8g2_font_helvR08_tf);
+  u8g2.drawStr(degX + 7, 22, "C");
+
+  u8g2.setFont(u8g2_font_helvR08_tf);
+  u8g2.drawStr(5, 50, currentCondition.c_str());
+
+  // Weather icon — variety depends on condition (see mapOWMCondition)
+  if (weatherIcon == WEATHER_ICON_MIST) {
+    drawMistIcon(86, 20, false);
+  } else {
+    u8g2.setFont(u8g2_font_open_iconic_weather_4x_t);
+    u8g2.drawGlyph(85, 42, weatherIcon);
+  }
+
+  // 3. BOTTOM "PILL" CONTAINER (Stats)
+  u8g2.drawRFrame(0, 52, 128, 12, 4);
+
+  u8g2.setFont(u8g2_font_helvR08_tf);
+  char humBuf[10];
+  snprintf(humBuf, sizeof(humBuf), "H: %d%%", currentHumidity);
+  u8g2.drawStr(6, 61, humBuf);
+
+  u8g2.drawDisc(50, 58, 1);
+
+  char windBuf[16];
+  snprintf(windBuf, sizeof(windBuf), "W: %.0fm/s %s", currentWindSpeed, currentWindDir.c_str());
+  u8g2.drawStr(58, 61, windBuf);
+}
+
+// --- Forecast Screen (rounded temps, no decimal point) ---
+void drawForecastScreen() {
+  u8g2.setFont(u8g2_font_helvB08_tf);
+  u8g2.drawStr(30, 10, "3-Day Forecast");
+  u8g2.drawLine(10, 13, 118, 13);
+
+  int todayIndex = timeClient.getDay();
+  for(int i = 0; i < 3; i++) {
+    int yPos = 28 + (i * 16);
+    u8g2.setFont(u8g2_font_helvR08_tf);
+    String fDay = days[(todayIndex + i + 1) % 7];
+    u8g2.drawStr(15, yPos, fDay.c_str());
+
+    if (fc_icon[i] == WEATHER_ICON_MIST) {
+      drawMistIcon(55, yPos - 10, true);
+    } else {
+      u8g2.setFont(u8g2_font_open_iconic_weather_2x_t);
+      u8g2.drawGlyph(55, yPos + 4, fc_icon[i]);
+    }
+
+    u8g2.setFont(u8g2_font_helvR08_tf);
+    int roundedFc = (int)round(fc_temp[i]);
+    char fTempBuf[8];
+    snprintf(fTempBuf, sizeof(fTempBuf), "%d C", roundedFc); // no decimal point
+    u8g2.drawStr(85, yPos, fTempBuf);
+  }
+}
+
+// --- OpenWeatherMap condition mapping (weather.id ranges) ---
+// Uses u8g2_font_open_iconic_weather glyph codes for more variety.
+// Reference glyphs in that font: 65=sun,66=moon,67=rain,68=snow,69=clear day/sun-cloud,
+// 70=fog/mist,71=wind,72=storm/lightning. (Exact indices per u8g2 open_iconic_weather set.)
+void mapOWMCondition(int id, String &cond, uint16_t &icon) {
+  if (id == 800) {
+    cond = "Clear"; icon = 69; // sun
+  } else if (id == 801) {
+    cond = "Few Clouds"; icon = 65; // sun peeking
+  } else if (id == 802 || id == 803) {
+    cond = "P. Cloudy"; icon = 64; // cloud
+  } else if (id == 804) {
+    cond = "Overcast"; icon = 65; // full cloud
+  } else if (id >= 200 && id <= 232) {
+    cond = "Thunderstorm"; icon = 66; // lightning bolt icon
+  } else if (id >= 300 && id <= 321) {
+    cond = "Drizzle"; icon = 67; // light rain
+  } else if (id >= 500 && id <= 504) {
+    cond = "Rain"; icon = 67; // rain
+  } else if (id >= 511 && id <= 531) {
+    cond = "Heavy Rain"; icon = 67; // rain
+  } else if (id >= 600 && id <= 622) {
+    cond = "Snow"; icon = 70; // snow icon
+  } else if (id == 701 || id == 711 || id == 721 || id == 741) {
+    cond = (id == 741) ? "Fog" : "Mist";
+    icon = WEATHER_ICON_MIST; // custom three-line fog symbol
+  } else if (id >= 731 && id <= 781) {
+    cond = "Windy/Dust"; icon = 72; // wind icon
+  } else {
+    cond = "Cloudy"; icon = 65;
+  }
+}
+
+// --- Current weather via OWM /weather ---
+void fetchWeather() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  String url = "http://api.openweathermap.org/data/2.5/weather?lat=" + String(weatherLat, 4) +
+               "&lon=" + String(weatherLon, 4) + "&units=metric&appid=" + weatherKey;
+
+  HTTPClient http;
+  http.setTimeout(8000);
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    String payload = http.getString();
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (!error) {
+      currentTemp = doc["main"]["temp"];
+      currentHumidity = doc["main"]["humidity"];
+      currentWindSpeed = doc["wind"]["speed"];
+      float windDeg = doc["wind"]["deg"];
+      currentWindDir = degToCompass(windDeg);
+
+      // OpenWeatherMap returns the offset for the coordinates, including DST where applicable.
+      // Retain the last known offset in NVS for offline clock display.
+      if (!doc["timezone"].isNull()) {
+        int locationOffset = doc["timezone"].as<int>();
+        if (locationOffset >= -43200 && locationOffset <= 50400 && locationOffset != utcOffsetSeconds) {
+          utcOffsetSeconds = locationOffset;
+          timeClient.setTimeOffset(utcOffsetSeconds);
+          prefs.putInt("utcOffset", utcOffsetSeconds);
+        }
+      }
+      int wid = doc["weather"][0]["id"];
+      mapOWMCondition(wid, currentCondition, weatherIcon);
+    }
+  }
+  http.end();
+}
+
+String degToCompass(float deg) {
+  const char* dirs[] = {"N","NE","E","SE","S","SW","W","NW"};
+  int idx = (int)((deg + 22.5) / 45.0) % 8;
+  return String(dirs[idx]);
+}
+
+// --- 3-day forecast via OWM /forecast (3-hour steps, pick ~midday each day) ---
+void fetchForecast() {
+  if (WiFi.status() != WL_CONNECTED) return;
+
+  String url = "http://api.openweathermap.org/data/2.5/forecast?lat=" + String(weatherLat, 4) +
+               "&lon=" + String(weatherLon, 4) + "&units=metric&appid=" + weatherKey;
+
+  HTTPClient http;
+  http.setTimeout(8000);
+  http.begin(url);
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    String payload = http.getString();
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, payload);
+    if (!error) {
+      int idxs[3] = {7, 15, 23};
+      for (int i = 0; i < 3; i++) {
+        int idx = idxs[i];
+        fc_temp[i] = doc["list"][idx]["main"]["temp"];
+        int fid = doc["list"][idx]["weather"][0]["id"];
+        String dummy;
+        mapOWMCondition(fid, dummy, fc_icon[i]);
+      }
+    }
+  }
+  http.end();
+}
+
+
+// ---------------- Device-local WebServer dashboard ----------------
+// Lossless Brotli-compressed dashboard. Browser decompresses it automatically.
+// The HTML/CSS/JS are byte-for-byte identical to the original web interface.
+// Readable, uncompressed dashboard: retains all original HTML, CSS, JavaScript and SVG.
+const char DASHBOARD_HTML[] PROGMEM = R"DBHTML(<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f7f8f6"><meta name="description" content="Private local control center for Desk-Companion"><title>Desk-Companion — Control Center</title>
+<style>
+:root{--bg:#f7f8f6;--card:#fff;--text:#1b2422;--sub:#78817e;--line:#e7eae7;--accent:#176953;--accentLight:#edf6f1;--ink:#26352e;--shadow:0 5px 26px rgba(21,36,29,.035)}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);font:14px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:var(--text);-webkit-font-smoothing:antialiased}button,input,select{font:inherit}button{cursor:pointer}.icon{display:inline-block;vertical-align:middle;flex:none}.layout{display:flex;min-height:100vh}.sidebar{width:246px;background:#fff;border-right:1px solid var(--line);padding:27px 18px;display:flex;flex-direction:column;gap:34px;position:sticky;top:0;height:100vh}.brand{display:flex;align-items:center;gap:12px;padding:0 9px}.mark{height:40px;width:40px;border-radius:12px;background:#e6f0e9;color:var(--accent);display:grid;place-items:center}.brand-name{font-weight:750;font-size:16px;letter-spacing:-.5px;line-height:1.2}.brand-sub{font-size:10px;letter-spacing:1.15px;color:var(--sub);font-weight:700;margin-top:3px}.navgroup{font-size:10px;font-weight:750;color:#9baba2;letter-spacing:1.4px;margin:0 12px 12px;text-transform:uppercase}.navitem{display:flex;align-items:center;gap:12px;text-decoration:none;color:#68736d;padding:12px 13px;border-radius:10px;margin:3px 0;font-size:13px;font-weight:580}.navitem.active{background:var(--accentLight);color:var(--accent);font-weight:750}.navitem:hover{background:#f5f7f4;color:var(--ink)}.sidebar-bottom{margin-top:auto;padding:14px;border-radius:12px;background:#f7f9f6;border:1px solid var(--line);display:flex;gap:10px;color:var(--sub);font-size:11px;line-height:1.6}.main{flex:1;min-width:0;max-width:1450px;padding:32px clamp(20px,4vw,62px) 55px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:29px}.page-title{font-size:26px;font-weight:760;letter-spacing:-1.1px;margin:0}.lead{font-size:13px;color:var(--sub);margin:5px 0 0}.badge{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:100px;padding:9px 13px;color:#376f59;font-size:12px;font-weight:700;white-space:nowrap}.pulse{width:7px;height:7px;border-radius:50%;background:#29a26e;box-shadow:0 0 0 3px #dff5e9}.badge.offline{color:#aa5a44}.badge.offline .pulse{background:#bd6b56;box-shadow:0 0 0 3px #f8e8e2}.hero{background:#e9f0e9;min-height:228px;border-radius:18px;display:flex;align-items:center;justify-content:space-between;padding:28px 39px;gap:25px;border:1px solid #e0e9e0;overflow:hidden}.eyebrow{font-size:10px;letter-spacing:1.8px;color:#438068;font-weight:800}.hero h2{font-size:30px;letter-spacing:-1.1px;line-height:1.15;margin:9px 0 8px;font-weight:800}.hero p{color:#6d8075;margin:0;max-width:340px;font-size:13px}.hero-face{width:170px;height:137px;background:#263f35;border:6px solid #547163;border-radius:27px;position:relative;flex:none;box-shadow:0 13px 30px #254a3326;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:22px;transform:rotate(-5deg)}.hero-face:before,.hero-face:after{content:"";height:15px;width:4px;background:#547163;position:absolute;top:-19px;border-radius:4px}.hero-face:before{left:51px;transform:rotate(-24deg)}.hero-face:after{right:50px;transform:rotate(24deg)}.face-eyes{display:flex;gap:36px}.face-eyes span{height:32px;width:23px;border-radius:20px;background:#c7f7d6;box-shadow:0 0 13px #bdfad44a}.face-mouth{height:15px;width:39px;border:0;border-bottom:4px solid #c7f7d6;border-radius:0 0 50% 50%}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;margin:18px 0 25px}.metric{background:#fff;border:1px solid var(--line);border-radius:14px;padding:17px 20px;display:flex;gap:15px;align-items:center}.metric-icon{width:43px;height:43px;border-radius:12px;background:#f1f5f1;color:var(--accent);display:grid;place-items:center}.metric-label{font-size:11px;color:var(--sub);margin-bottom:2px}.metric-value{font-size:17px;font-weight:770;letter-spacing:-.4px;overflow-wrap:anywhere}.two{display:grid;grid-template-columns:1.12fr 1fr;gap:18px;align-items:start}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:23px 24px;box-shadow:var(--shadow);min-width:0}.card h3{margin:0;font-weight:760;font-size:16px;letter-spacing:-.3px}.cardhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;gap:10px}.cardhead .icon{color:#6b8175}.card-sub{font-size:12px;color:var(--sub);margin:5px 0 20px}.screenBtns{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.screenBtns button{display:flex;gap:11px;align-items:center;text-align:left;border:1px solid var(--line);border-radius:11px;background:#fff;padding:17px 14px;color:#54605a;font-size:12px;font-weight:650;min-height:61px}.screenBtns button.active{background:var(--accentLight);color:var(--accent);border-color:#a8d5ba}.screenBtns button:hover{border-color:#86b69d}.control-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 0;border-bottom:1px solid var(--line)}.control-row span:first-child{color:var(--sub);font-size:12px}.control-row strong{font-size:12px;text-align:right;overflow-wrap:anywhere}label{display:block;color:#5a6960;font-size:12px;font-weight:680;margin-bottom:7px}input,select{display:block;width:100%;border:1px solid #dfe5df;border-radius:9px;background:#fff;color:#27372e;padding:12px 13px;outline:none;min-width:0}input:focus,select:focus{border-color:#5d9c7f;box-shadow:0 0 0 3px #e7f5eb}input::placeholder{color:#a2aaa4}.field{margin:0 0 15px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid #dce4dc;background:#fff;color:#40554a;border-radius:9px;padding:11px 15px;font-size:12px;font-weight:740}.btn:hover{background:#f5f8f5}.btn.primary{background:var(--accent);border-color:var(--accent);color:white}.btn.primary:hover{background:#10523f}.btn.danger{color:#ad554f;border-color:#f0ddda}.btn.danger:hover{background:#fff7f6}.actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:19px}.hint{font-size:11px;color:#8b968e;line-height:1.65;margin:14px 0 0}.section-title{font-size:17px;font-weight:780;letter-spacing:-.4px;margin:28px 0 13px}.config{display:grid;grid-template-columns:1fr 1fr;gap:18px}.config .card{min-width:0}.notice{min-height:20px;font-size:12px;color:var(--accent);margin:18px 0}footer{padding-top:16px;border-top:1px solid var(--line);color:#99a39b;font-size:11px;display:flex;justify-content:space-between;gap:10px}@media(max-width:1080px){.sidebar{width:210px}.main{padding:28px 24px 48px}.hero{padding:26px}.metrics{gap:9px}.metric{padding:15px 12px;gap:10px}}@media(max-width:790px){.sidebar{display:none}.main{padding:24px 18px 44px}.two,.config{grid-template-columns:1fr}.hero{padding:25px}.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:530px){.top{align-items:flex-start}.page-title{font-size:23px}.hero{min-height:180px;padding:20px}.hero h2{font-size:25px}.hero p{font-size:12px}.hero-face{width:96px;height:92px;border-width:4px;border-radius:18px;gap:13px}.face-eyes{gap:20px}.face-eyes span{width:13px;height:20px}.face-mouth{width:23px;height:10px;border-bottom-width:3px}.hero-face:before,.hero-face:after{display:none}.metrics{grid-template-columns:1fr;gap:9px}.metric{padding:13px 15px}.card{padding:20px 17px}.form-grid{grid-template-columns:1fr}footer{display:block}}
+.scanhead{display:flex;align-items:center;justify-content:space-between;gap:12px}.scanhead label{margin:0}.scanbtn{padding:9px 13px!important;white-space:nowrap}.scanresults{display:none;margin:12px 0 2px;max-height:245px;overflow:auto;border:1px solid var(--line);background:#fbfcfb;border-radius:12px}.scanresults.visible{display:block}.scanitem{width:100%;border:0;border-bottom:1px solid var(--line);background:transparent;display:flex;align-items:center;justify-content:space-between;gap:14px;text-align:left;padding:12px 14px;color:var(--text);font-size:13px}.scanitem:last-child{border-bottom:0}.scanitem:hover,.scanitem:focus-visible{background:var(--accentLight);outline:0}.scanmeta{font-size:11px;color:var(--sub);white-space:nowrap}.scanhint{padding:13px;color:var(--sub);font-size:12px}
+
+/* Native-feeling, accessible in-app dialogs and notifications. */
+.dialog-backdrop{position:fixed;inset:0;z-index:1000;display:flex;justify-content:center;align-items:center;padding:18px;background:rgba(20,37,31,.42);backdrop-filter:blur(7px);opacity:0;visibility:hidden;transition:opacity .18s ease,visibility .18s ease}
+.dialog-backdrop.open{opacity:1;visibility:visible}.dialog-panel{width:min(100%,430px);background:#fff;border:1px solid #e7ebe7;border-radius:20px;padding:27px;box-shadow:0 25px 90px rgba(23,38,30,.20);transform:translateY(12px) scale(.98);transition:transform .2s ease}.dialog-backdrop.open .dialog-panel{transform:translateY(0) scale(1)}
+.dialog-icon{display:grid;place-items:center;width:46px;height:46px;border-radius:14px;color:#2a6b54;background:#eaf3ed;margin-bottom:18px}.dialog-icon.danger{color:#a55234;background:#fcf0e9}
+.dialog-panel h2{font-size:21px;letter-spacing:-.6px;margin:0 0 9px;color:#182c23}.dialog-panel p{font-size:13px;line-height:1.7;color:#69796f;margin:0 0 24px}.dialog-actions{display:flex;justify-content:flex-end;gap:10px;flex-wrap:wrap}.dialog-actions .btn{min-width:96px;justify-content:center}.btn.destructive{background:#a64e38;border-color:#a64e38;color:white}.btn.destructive:hover{background:#8b3d2a}
+.toast-stack{position:fixed;top:20px;right:20px;z-index:1100;display:flex;flex-direction:column;gap:10px;width:min(375px,calc(100vw - 36px));pointer-events:none}.app-toast{display:flex;align-items:start;gap:12px;padding:14px 15px;background:#fff;border:1px solid #e0e8e1;border-radius:15px;box-shadow:0 10px 45px rgba(24,47,36,.13);pointer-events:auto;animation:toast-in .22s ease}.app-toast.error{border-color:#f0d3d0}.app-toast .toast-symbol{flex:none;color:#297252;margin-top:2px}.app-toast.error .toast-symbol{color:#bb4a42}.app-toast .toast-body{flex:1;min-width:0}.app-toast strong{display:block;font-size:13px;color:#22372c;margin:0 0 3px}.app-toast p{margin:0;font-size:12px;line-height:1.55;color:#6a7a70;overflow-wrap:anywhere}.app-toast button{padding:2px;border:0;background:none;color:#87948b;cursor:pointer}.app-toast svg{width:18px;height:18px;display:block}
+@keyframes toast-in{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}@media(max-width:600px){.toast-stack{top:auto;bottom:18px;right:18px}.dialog-panel{padding:23px}}
+@media(prefers-reduced-motion:reduce){.dialog-backdrop,.dialog-panel,.app-toast{transition:none;animation:none}}
+
+/* Searchable, fully custom emotion selector (no native browser dropdown). */
+.emotion-picker{position:relative}.emotion-search-box{display:flex;align-items:center;gap:9px;background:#fff;border:1px solid #dfe5df;border-radius:10px;padding:0 10px;color:#74847a;transition:box-shadow .15s,border-color .15s}.emotion-search-box:focus-within{border-color:#5d9c7f;box-shadow:0 0 0 3px #e7f5eb}.emotion-search-box input{padding:12px 0;flex:1;min-width:0;border:0;box-shadow:none!important;background:transparent}.emotion-clear{display:grid;place-items:center;border:0;background:transparent;color:#829087;padding:5px;border-radius:6px}.emotion-clear:hover{color:#245f48;background:#eef4ef}.emotion-options{display:none;position:absolute;left:0;right:0;top:calc(100% - 23px);z-index:25;border:1px solid #dce7de;border-radius:13px;padding:6px;background:#fff;box-shadow:0 16px 44px rgba(21,36,29,.14);max-height:244px;overflow:auto}.emotion-picker.open .emotion-options{display:block}.emotion-option{width:100%;display:flex;align-items:center;justify-content:space-between;text-align:left;padding:10px 12px;background:transparent;border:0;border-radius:8px;color:#34483a;font-size:13px}.emotion-option:hover,.emotion-option.focused{background:#edf6f1;color:#176953}.emotion-option.selected{font-weight:750}.emotion-option svg{color:#176953}.emotion-empty{padding:18px 12px;color:#87948a;font-size:12px;text-align:center}.emotion-current{color:#78887d;font-size:11px;padding-top:8px}
+</style></head><body><div class="layout">
+<aside class="sidebar"><div class="brand"><div class="mark"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l4 4v10l-4 4H8l-4-4V7z"/><path d="M9 10h.01M15 10h.01" stroke-width="3"/><path d="M8.5 15c2.2 2 4.8 2 7 0"/></svg></div><div><div class="brand-name">Desk-Companion</div><div class="brand-sub">CONTROL CENTER</div></div></div><nav aria-label="Main navigation"><div class="navgroup">Workspace</div><a class="navitem active" href="#overview"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg> Overview</a><a class="navitem" href="#display"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 22h8M12 18v4"/></svg> Display controls</a><a class="navitem" href="#device"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg> Device status</a><div class="navgroup" style="margin-top:29px">Configuration</div><a class="navitem" href="#network"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg> Wi-Fi network</a><a class="navitem" href="#weather"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a4 4 0 0 1-1-7.9A7 7 0 0 1 18 10a4.5 4.5 0 0 1 0 9H6z"/></svg> Weather & time</a></nav><div class="sidebar-bottom"><svg class="icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Local-first control.<br>No cloud login required.</span></div></aside>
+<main class="main" id="overview"><div class="top"><div><h1 class="page-title">Overview</h1><p class="lead">Manage your Desk-Companion, all in one place.</p></div><div class="badge offline" id="connectionBadge"><span class="pulse"></span><span id="conn">Connecting</span></div></div>
+<div class="hero"><div><div class="eyebrow">MEET YOUR COMPANION</div><h2>Hello, human.</h2><p>Your pocket-sized desk companion is ready whenever you are.</p></div><div class="hero-face" role="img" aria-label="Smiling Desk-Companion illustration"><div class="face-eyes"><span></span><span></span></div><div class="face-mouth"></div></div></div>
+<div class="metrics"><div class="metric"><div class="metric-icon"><svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg></div><div><div class="metric-label">Network</div><div class="metric-value" id="wifilabel">—</div></div></div><div class="metric"><div class="metric-icon"><svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3a2 2 0 0 1 4 0v10.5a4 4 0 1 1-4 0V3z"/><path d="M12 9v9"/></svg></div><div><div class="metric-label">ESP32-S3 chip temperature</div><div class="metric-value" id="temperature">—</div></div></div><div class="metric"><div class="metric-icon"><svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><div><div class="metric-label">Uptime</div><div class="metric-value" id="uptime">—</div></div></div></div>
+<div class="two"><section class="card" id="display"><div class="cardhead"><h3>Display controls</h3><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 22h8M12 18v4"/></svg></div><p class="card-sub">Choose what appears on the OLED display.</p><div class="screenBtns" id="screens"><button data-screen="0"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 14c2 3 6 3 8 0M9 9h.01M15 9h.01" stroke-width="2.2"/></svg> Emotions</button><button data-screen="1"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Clock</button><button data-screen="2"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a4 4 0 0 1-1-7.9A7 7 0 0 1 18 10a4.5 4.5 0 0 1 0 9H6z"/></svg> Weather</button><button data-screen="3"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18"/></svg> Forecast</button></div><div class="field" style="margin-top:22px"><label for="emotion">Emotion mode</label><div class="emotion-picker" id="emotionPicker">
+  <div class="emotion-search-box"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 4 4"/></svg><input id="emotionSearch" type="text" role="combobox" aria-controls="emotionOptions" aria-expanded="false" aria-autocomplete="list" autocomplete="off" placeholder="Search 66 emotions…"/><button class="emotion-clear" id="emotionClear" type="button" aria-label="Clear emotion search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg></button></div>
+  <div class="emotion-options" id="emotionOptions" role="listbox" aria-label="Choose an emotion"></div>
+  <div class="emotion-current" id="emotionCurrent">Mode: Automatic — all 66 emotions</div>
+</div></div><div class="actions"><button class="btn" id="next">Next screen <svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></button><button class="btn danger" id="sleep"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 15.4A8.5 8.5 0 0 1 8.6 4 8.5 8.5 0 1 0 20 15.4Z"/></svg> Sleep</button></div><p class="hint">A long touch puts Desk-Companion to sleep. Touch again to wake.</p></section>
+<section class="card" id="device"><div class="cardhead"><h3>Device information</h3><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg></div><p class="card-sub">Current status reported by your ESP32-S3.</p><div class="control-row"><span>Hotspot name</span><strong id="ap">—</strong></div><div class="control-row"><span>Local IP address</span><strong id="ip">—</strong></div><div class="control-row"><span>Active emotion</span><strong id="emo">—</strong></div><div class="actions"><button class="btn" id="refresh"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 11a8 8 0 0 0-14-5L4 8M4 3v5h5M4 13a8 8 0 0 0 14 5l2-2M20 21v-5h-5"/></svg> Refresh</button><button class="btn danger" id="reboot"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v10M6 5a9 9 0 1 0 12 0"/></svg> Restart</button></div><p class="hint">The setup hotspot appears when Wi-Fi configuration or recovery is needed.</p></section></div>
+<h2 class="section-title">Configuration</h2><div class="config"><section class="card" id="network"><div class="cardhead"><h3>Wi-Fi network</h3><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg></div><p class="card-sub">Connect Desk-Companion to your 2.4 GHz network.</p><form id="wifiForm"><div class="field"><div class="scanhead"><label for="ssid">Network name (SSID)</label><button class="btn scanbtn" id="scanWifi" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg> Scan Wi-Fi</button></div><div id="scanResults" class="scanresults" aria-live="polite"></div></div><div class="field"><label for="ssid">Network name (SSID)</label><input id="ssid" name="ssid" maxlength="32" autocomplete="off" placeholder="Enter network name" required></div><div class="field"><label for="password">Wi-Fi password</label><input id="password" name="password" type="password" maxlength="63" autocomplete="new-password" placeholder="Leave blank to keep existing"></div><button class="btn primary" type="submit"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h13l3 3v15H4zM8 3v6h8V3M8 21v-8h8v8"/></svg> Save network</button></form><p class="hint">Credentials are stored on your device, never inside the shared source code.</p></section>
+<section class="card" id="network2"><div class="cardhead"><h3>Secondary Wi-Fi network</h3><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg></div><p class="card-sub">Backup 2.4 GHz network. Desk-Companion switches to it if the first network is unavailable.</p><form id="wifiForm2"><div class="field"><div class="scanhead"><label for="ssid2">Network name (SSID)</label><button class="btn scanbtn" id="scanWifi2" type="button"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg> Scan Wi-Fi</button></div><div id="scanResults2" class="scanresults" aria-live="polite"></div></div><div class="field"><label for="ssid2">Network name (SSID)</label><input id="ssid2" name="ssid2" maxlength="32" autocomplete="off" placeholder="Enter network name" required></div><div class="field"><label for="password2">Wi-Fi password</label><input id="password2" name="password2" type="password" maxlength="63" autocomplete="new-password" placeholder="Leave blank to keep existing"></div><button class="btn primary" type="submit"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h13l3 3v15H4zM8 3v6h8V3M8 21v-8h8v8"/></svg> Save backup network</button></form><p class="hint">Backup credentials are stored locally, not hardcoded in the firmware.</p></section>
+<section class="card" id="weather"><div class="cardhead"><h3>Weather & time</h3><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a4 4 0 0 1-1-7.9A7 7 0 0 1 18 10a4.5 4.5 0 0 1 0 9H6z"/></svg></div><p class="card-sub">Enter your city, state and country. Desk-Companion finds the location and synchronizes its local time automatically after connecting to the internet.</p><form id="weatherForm"><div class="field"><label for="city">City</label><input id="city" name="city" maxlength="32" placeholder="e.g. Kochi" required></div><div class="form-grid"><div class="field"><label for="state">State / Province</label><input id="state" name="state" maxlength="64" placeholder="e.g. Kerala" required></div><div class="field"><label for="country">Country</label><input id="country" name="country" maxlength="64" placeholder="e.g. India" required></div></div><div class="field"><label for="apiKey">OpenWeatherMap API key</label><input id="apiKey" name="apiKey" type="password" autocomplete="new-password" placeholder="Leave blank to keep existing"></div><div class="field"><label>Location time zone</label><div class="control-row"><span>Detected from your configured location</span><strong id="timeZoneStatus">Awaiting sync</strong></div></div><button class="btn primary" type="submit"><svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3h13l3 3v15H4zM8 3v6h8V3M8 21v-8h8v8"/></svg> Save weather settings</button></form><p class="hint">Private keys are not returned by the device status API.</p></section></div>
+<div id="message" class="notice" role="status" aria-live="polite"></div><footer><span>Desk-Companion Control Center</span><span>Local dashboard · ESP32-S3</span></footer></main></div>
+<div class="toast-stack" id="toastStack" role="status" aria-live="polite" aria-atomic="false"></div>
+<div class="dialog-backdrop" id="customDialog" aria-hidden="true">
+  <div class="dialog-panel" role="dialog" aria-modal="true" aria-labelledby="dialogTitle" aria-describedby="dialogDescription">
+    <div class="dialog-icon" id="dialogIcon"><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z"/><path d="M12 7v6M12 17h.01"/></svg></div>
+    <h2 id="dialogTitle">Confirm action</h2><p id="dialogDescription"></p>
+    <div class="dialog-actions"><button class="btn" id="dialogCancel" type="button">Cancel</button><button class="btn primary" id="dialogAccept" type="button">Confirm</button></div>
+  </div>
+</div>
+<script>
+const $=id=>document.getElementById(id);let filled=false;let state={};const emotions='Neutral,Happy,Sad,Angry,Surprised,Sleepy,Love,Wink,Confused,Scared,Bored,Excited,Crying,Laughing,Suspicious,Dizzy,Sick,Cool,Shocked,Annoyed,Curious,Thinking,Embarrassed,Proud,Worried,Blink,Jealous,Grumpy,Mischievous,Shy,Nervous,Ecstatic,Frustrated,Hopeful,Grateful,Nostalgic,Determined,Playful,Sarcastic,Smug,Guilty,Relieved,Anxious,Content,Irritated,Amused,Skeptical,Horrified,Peaceful,Starstruck,Drowsy,Puzzled,Devious,Humble,Optimistic,Pessimistic,Focused,Daydreaming,Miserable,Cheeky,Alert,Calm,Furious,Tearful,Hysterical,Smitten'.split(',');let chosenEmotion=-1,emotionFocus=-1;
+const emotionChoices=[{name:'Automatic — all 66 emotions',id:-1},...emotions.map((name,id)=>({name,id}))];
+const checkSvg='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 4 4L19 6"/></svg>';
+function closeEmotionPicker(){ $('emotionPicker').classList.remove('open');$('emotionSearch').setAttribute('aria-expanded','false');emotionFocus=-1; }
+function renderEmotions(){
+  const box=$('emotionOptions');box.replaceChildren();const query=$('emotionSearch').value.trim().toLowerCase();
+  const results=emotionChoices.filter(x=>x.name.toLowerCase().includes(query));
+  emotionFocus=results.length?Math.min(Math.max(emotionFocus,0),results.length-1):-1;
+  if(!results.length){const empty=document.createElement('div');empty.className='emotion-empty';empty.textContent='No matching emotions';box.append(empty);return;}
+  results.forEach((item,index)=>{
+    const button=document.createElement('button');button.type='button';button.setAttribute('role','option');button.setAttribute('aria-selected',String(item.id===chosenEmotion));button.className='emotion-option'+(item.id===chosenEmotion?' selected':'')+(index===emotionFocus?' focused':'');
+    const name=document.createElement('span');name.textContent=item.name;button.append(name);
+    if(item.id===chosenEmotion)button.insertAdjacentHTML('beforeend',checkSvg);
+    button.addEventListener('mousedown',e=>e.preventDefault());button.addEventListener('click',()=>chooseEmotion(item.id));box.append(button);
+  });
+}
+function openEmotionPicker(){ $('emotionPicker').classList.add('open');$('emotionSearch').setAttribute('aria-expanded','true');renderEmotions(); }
+function chooseEmotion(id){
+  chosenEmotion=id; $('emotionCurrent').textContent='Mode: '+(id<0?'Automatic — all 66 emotions':emotions[id]);
+  $('emotionSearch').value='';closeEmotionPicker();call('/api/emotion',{emotion:id});
+}
+$('emotionSearch').addEventListener('focus',openEmotionPicker);
+$('emotionSearch').addEventListener('click',openEmotionPicker);
+$('emotionSearch').addEventListener('input',()=>{emotionFocus=0;openEmotionPicker()});
+$('emotionClear').addEventListener('click',()=>{$('emotionSearch').value='';$('emotionSearch').focus();openEmotionPicker()});
+$('emotionSearch').addEventListener('keydown',e=>{
+  if(e.key==='Escape'){e.preventDefault();closeEmotionPicker();$('emotionSearch').blur();return;}
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+    e.preventDefault();if(!$('emotionPicker').classList.contains('open'))openEmotionPicker();
+    const count=$('emotionOptions').querySelectorAll('.emotion-option').length;
+    if(count){emotionFocus=(emotionFocus+(e.key==='ArrowDown'?1:-1)+count)%count;renderEmotions();$('emotionOptions').querySelectorAll('.emotion-option')[emotionFocus]?.scrollIntoView({block:'nearest'});}return;
+  }
+  if(e.key==='Enter'&&$('emotionPicker').classList.contains('open')){e.preventDefault();$('emotionOptions').querySelectorAll('.emotion-option')[Math.max(emotionFocus,0)]?.click();}
+});
+document.addEventListener('click',e=>{if(!$('emotionPicker').contains(e.target))closeEmotionPicker()});;
+const ICON_CHECK='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
+const ICON_ERROR='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v6M12 17h.01"/></svg>';
+const ICON_CLOSE='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+function msg(t,bad=false){
+  // Also maintain the inline status for screen readers and as a non-popup fallback.
+  $('message').textContent=t;$('message').style.color=bad?'#be123c':'#047857';
+  const stack=$('toastStack'), toast=document.createElement('div');
+  toast.className='app-toast'+(bad?' error':'');
+  const symbol=document.createElement('span');symbol.className='toast-symbol';symbol.innerHTML=bad?ICON_ERROR:ICON_CHECK;
+  const content=document.createElement('div');content.className='toast-body';
+  const title=document.createElement('strong');title.textContent=bad?'Something went wrong':'Desk-Companion';
+  const detail=document.createElement('p');detail.textContent=t;content.append(title,detail);
+  const close=document.createElement('button');close.type='button';close.setAttribute('aria-label','Dismiss notification');close.innerHTML=ICON_CLOSE;close.onclick=()=>toast.remove();
+  toast.append(symbol,content,close);stack.prepend(toast);
+  while(stack.childElementCount>3)stack.lastElementChild.remove();
+  setTimeout(()=>toast.remove(),bad?6500:4000);
+}
+let dialogResolver=null,dialogLastFocus=null;
+function closeDialog(accepted){
+  const overlay=$('customDialog');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');
+  document.body.style.overflow='';
+  if(dialogLastFocus && dialogLastFocus.isConnected)dialogLastFocus.focus();
+  const finish=dialogResolver;dialogResolver=null;if(finish)finish(accepted);
+}
+function confirmAction(title,description,actionLabel='Continue',danger=false){
+  if(dialogResolver)closeDialog(false);
+  return new Promise(resolve=>{
+    dialogResolver=resolve;dialogLastFocus=document.activeElement;
+    $('dialogTitle').textContent=title;$('dialogDescription').textContent=description;
+    $('dialogAccept').textContent=actionLabel;
+    $('dialogAccept').className='btn '+(danger?'destructive':'primary');
+    $('dialogIcon').classList.toggle('danger',danger);
+    const overlay=$('customDialog');overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');
+    document.body.style.overflow='hidden';$('dialogCancel').focus();
+  });
+}
+$('dialogCancel').onclick=()=>closeDialog(false);
+$('dialogAccept').onclick=()=>closeDialog(true);
+$('customDialog').addEventListener('click',e=>{if(e.target===$('customDialog'))closeDialog(false)});
+document.addEventListener('keydown',e=>{
+  const open=$('customDialog').classList.contains('open');if(!open)return;
+  if(e.key==='Escape'){e.preventDefault();closeDialog(false)}
+  if(e.key==='Tab'){
+    const first=$('dialogCancel'),last=$('dialogAccept');
+    if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus()}
+    else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus()}
+  }
+});
+async function request(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data)});const o=await r.json();if(!r.ok)throw Error(o.error||'Request failed');msg(o.message||'Saved!');return o}
+let statusBusy=false;async function status(){if(statusBusy)return;statusBusy=true;const started=performance.now();const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),3000);try{const r=await fetch('/api/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('Not connected');state=await r.json();$('conn').textContent='Online · '+Math.round(performance.now()-started)+' ms';$('connectionBadge').classList.remove('offline');$('wifilabel').textContent=state.wifiConnected?state.ssid:'Offline / AP';$('temperature').textContent=Number.isFinite(state.cpuTempC)?state.cpuTempC.toFixed(1)+'°C':'Unavailable';$('timeZoneStatus').textContent=state.weatherReady?'UTC '+(state.offset>=0?'+':'')+(state.offset/60).toFixed(2)+' h':'Awaiting weather sync';$('uptime').textContent=Math.floor(state.uptime/3600)+'h '+(Math.floor(state.uptime/60)%60)+'m';$('ap').textContent=state.ap;$('ip').textContent=state.ip;$('emo').textContent=emotions[state.emotion]||'—';document.querySelectorAll('#screens button').forEach(b=>b.classList.toggle('active',+b.dataset.screen===state.screen));chosenEmotion=state.manualEmotion?state.emotion:-1;$('emotionCurrent').textContent='Mode: '+(chosenEmotion<0?'Automatic — all 66 emotions':emotions[chosenEmotion]||'Unknown');if($('emotionPicker').classList.contains('open'))renderEmotions();if(!filled){$('ssid').value=state.savedSSID||'';$('ssid2').value=state.savedSSID2||'';$('city').value=state.city||'';$('state').value=state.state||'';$('country').value=state.country||'';filled=true}}catch(e){$('conn').textContent='Offline';$('connectionBadge').classList.add('offline')}finally{clearTimeout(timeout);statusBusy=false}}
+async function call(path,data){try{await request(path,data);await status()}catch(e){msg(e.message,true)}}
+document.querySelectorAll('#screens button').forEach(b=>b.addEventListener('click',()=>call('/api/screen',{screen:b.dataset.screen})));$('next').onclick=()=>call('/api/screen',{screen:(state.screen+1)%4});$('refresh').onclick=status;$('sleep').onclick=async()=>{if(await confirmAction('Put Desk-Companion to sleep?','The display and web server will stop until you touch the sensor to wake it.','Sleep now'))await call('/api/sleep',{})};$('reboot').onclick=async()=>{if(await confirmAction('Restart Desk-Companion?','The dashboard will disconnect briefly while your device restarts.','Restart device',true))await call('/api/restart',{})};$('wifiForm').onsubmit=e=>{e.preventDefault();call('/api/wifi',{ssid:$('ssid').value,password:$('password').value})};$('wifiForm2').onsubmit=e=>{e.preventDefault();call('/api/wifi2',{ssid:$('ssid2').value,password:$('password2').value})};$('weatherForm').onsubmit=e=>{e.preventDefault();call('/api/weather',{city:$('city').value,state:$('state').value,country:$('country').value,apiKey:$('apiKey').value})};
+async function scanWiFi(second=false){const btn=$(second?'scanWifi2':'scanWifi'),box=$(second?'scanResults2':'scanResults');btn.disabled=true;btn.textContent='Scanning…';box.classList.add('visible');box.replaceChildren();const note=document.createElement('div');note.className='scanhint';note.textContent='Looking for nearby 2.4 GHz networks…';box.append(note);try{const r=await fetch('/api/wifi/scan',{cache:'no-store'});const data=await r.json();if(!r.ok)throw Error(data.error||'Wi-Fi scan failed');box.replaceChildren();if(!data.networks.length){const n=document.createElement('div');n.className='scanhint';n.textContent='No visible networks found. You can still type an SSID manually.';box.append(n)}else{for(const net of data.networks){const b=document.createElement('button');b.type='button';b.className='scanitem';const name=document.createElement('span');name.textContent=net.ssid;const meta=document.createElement('span');meta.className='scanmeta';meta.textContent=net.rssi+' dBm · '+(net.secure?'Secured':'Open');b.append(name,meta);b.addEventListener('click',()=>{$(second?'ssid2':'ssid').value=net.ssid;box.classList.remove('visible');$(second?'password2':'password').focus()});box.append(b)}}}catch(err){box.replaceChildren();const n=document.createElement('div');n.className='scanhint';n.textContent='Scan unavailable: '+err.message;box.append(n)}finally{btn.disabled=false;btn.innerHTML='<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg> Scan Wi-Fi'}}
+$('scanWifi').addEventListener('click',()=>scanWiFi(false));$('scanWifi2').addEventListener('click',()=>scanWiFi(true));
+status();setInterval(status,4000);
+</script></body></html>
+)DBHTML";
+
+bool authorizeWrite() { return true; } // Dashboard login intentionally disabled.
+void jsonReply(int status, const String& message, bool error = false) {
+  JsonDocument d;
+  d[error ? "error" : "message"] = message;
+  String out; serializeJson(d, out);
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(status, "application/json", out);
+}
+// Captive portal probes used by phones, tablets and computers.
+void redirectToCaptivePortal() {
+  server.sendHeader("Location", "http://192.168.4.1/", true);
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
+  server.send(302, "text/plain", "Open Desk-Companion setup: http://192.168.4.1/");
+}
+// Resolve the user-entered city/state/country into coordinates using OpenWeatherMap.
+// No latitude/longitude input is needed in the dashboard.
+bool resolveLocation(const String& city, const String& region, const String& country,
+                     const String& key, float& latOut, float& lonOut) {
+  if (WiFi.status() != WL_CONNECTED || key.isEmpty()) return false;
+  String countryCode = country;
+  countryCode.trim();
+  if (countryCode.equalsIgnoreCase("India")) countryCode = "IN";
+  else if (countryCode.equalsIgnoreCase("United States") || countryCode.equalsIgnoreCase("USA")) countryCode = "US";
+  else if (countryCode.equalsIgnoreCase("United Kingdom")) countryCode = "GB";
+  else if (countryCode.equalsIgnoreCase("United Arab Emirates")) countryCode = "AE";
+  String query = city + "," + region + "," + countryCode;
+  query.replace(" ", "%20"); query.replace(",", "%2C");
+  String url = "http://api.openweathermap.org/geo/1.0/direct?q=" + query + "&limit=5&appid=" + key;
+  HTTPClient req;
+  req.setTimeout(8000);
+  req.begin(url);
+  int response = req.GET();
+  if (response != 200) { req.end(); return false; }
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, req.getStream());
+  req.end();
+  if (err || !doc.is<JsonArray>() || doc.size() == 0) return false;
+  // Prefer the first result whose state/country matches the user's selection.
+  for (JsonVariant result : doc.as<JsonArray>()) {
+    String resultState = result["state"] | "";
+    String resultCountry = result["country"] | "";
+    if (resultState.equalsIgnoreCase(region) && resultCountry.equalsIgnoreCase(countryCode)) {
+      latOut = result["lat"].as<float>(); lonOut = result["lon"].as<float>();
+      return true;
+    }
+  }
+  // Do not silently select a different city/state when the query is ambiguous.
+  return false;
+}
+
+void setupWebServer() {
+  server.on("/generate_204", HTTP_GET, redirectToCaptivePortal);
+  server.on("/gen_204", HTTP_GET, redirectToCaptivePortal);
+  server.on("/hotspot-detect.html", HTTP_GET, redirectToCaptivePortal);
+  server.on("/library/test/success.html", HTTP_GET, redirectToCaptivePortal);
+  server.on("/ncsi.txt", HTTP_GET, redirectToCaptivePortal);
+  server.on("/connecttest.txt", HTTP_GET, redirectToCaptivePortal);
+  server.on("/redirect", HTTP_GET, redirectToCaptivePortal);
+  server.on("/canonical.html", HTTP_GET, redirectToCaptivePortal);
+  server.on("/success.txt", HTTP_GET, redirectToCaptivePortal);
+  server.on("/", HTTP_GET, []() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send_P(200, "text/html; charset=utf-8", DASHBOARD_HTML);
+  });
+  server.on("/api/status", HTTP_GET, []() {
+    JsonDocument d;
+    d["wifiConnected"] = WiFi.status() == WL_CONNECTED;
+    d["ssid"] = WiFi.status() == WL_CONNECTED ? WiFi.SSID() : "";
+    d["savedSSID"] = wifiSSID;
+    d["savedSSID2"] = wifiSSID2;
+    d["ap"] = apSSID;
+    d["ip"] = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
+    d["uptime"] = millis() / 1000;
+    d["screen"] = displayState;
+    d["emotion"] = (int)currentEmotion;
+    d["manualEmotion"] = manualEmotion;
+    d["weatherReady"] = weatherConfigured && lastWeatherUpdate != 0;
+    // ESP32-S3 on-die temperature sensor; not room/ambient temperature.
+    d["cpuTempC"] = temperatureRead();
+    d["condition"] = currentCondition;
+    d["city"] = cityLabel;
+    d["state"] = locationState;
+    d["country"] = locationCountry;
+    d["offset"] = utcOffsetSeconds / 60;
+    String out; serializeJson(d, out);
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", out);
+  });
+  // Scan nearby 2.4 GHz Wi-Fi networks. Never return saved credentials.
+  server.on("/api/wifi/scan", HTTP_GET, []() {
+    // A synchronous scan may briefly pause the dashboard while radio scans.
+    int count = WiFi.scanNetworks(false, true);
+    if (count < 0) return jsonReply(503, "Wi-Fi scan unavailable", true);
+    JsonDocument d;
+    JsonArray networks = d["networks"].to<JsonArray>();
+    for (int i = 0; i < count && i < 24; i++) {
+      String name = WiFi.SSID(i);
+      if (name.length() == 0) continue;
+      bool exists = false;
+      for (JsonObject network : networks) {
+        if (network["ssid"].as<String>() == name) { exists = true; break; }
+      }
+      if (exists) continue;
+      JsonObject network = networks.add<JsonObject>();
+      network["ssid"] = name;
+      network["rssi"] = WiFi.RSSI(i);
+      network["secure"] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+    }
+    WiFi.scanDelete();
+    String out; serializeJson(d, out);
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", out);
+  });
+  server.on("/api/screen", HTTP_POST, []() {
+    if (!authorizeWrite()) return;
+    int s = server.arg("screen").toInt();
+    if (s < 0 || s > 3) return jsonReply(400, "Invalid screen", true);
+    displayState = s; jsonReply(200, "Display updated");
+  });
+  server.on("/api/emotion", HTTP_POST, []() {
+    if (!authorizeWrite()) return;
+    int e = server.arg("emotion").toInt();
+    if (e < -1 || e >= EMOTION_COUNT) return jsonReply(400, "Invalid emotion", true);
+    manualEmotion = e >= 0;
+    if (manualEmotion) currentEmotion = (Emotion)e;
+    displayState = 0;
+    lastEmotionChange = millis();
+    jsonReply(200, manualEmotion ? "Emotion changed" : "Automatic emotions enabled");
+  });
+  server.on("/api/wifi", HTTP_POST, []() {
+    if (!authorizeWrite()) return;
+    String s = server.arg("ssid"), p = server.arg("password");
+    s.trim();
+    if (s.isEmpty() || s.length() > 32 || p.length() > 63)
+      return jsonReply(400, "Check Wi-Fi name and password length", true);
+    if (p.length() > 0 && p.length() < 8)
+      return jsonReply(400, "Wi-Fi password needs at least 8 characters", true);
+    if (s != wifiSSID && p.isEmpty())
+      return jsonReply(400, "Enter password for the new Wi-Fi network", true);
+    wifiSSID = s;
+    // Keep setup on screen until Wi-Fi association succeeds.
+    setupConnectedAt = 0;
+    if (p.length()) wifiPassword = p;
+    prefs.putString("wifiSSID", wifiSSID);
+    prefs.putString("wifiPass", wifiPassword);
+    jsonReply(200, "Wi-Fi saved; attempting connection");
+    WiFi.disconnect(false);
+    WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+  });
+  server.on("/api/wifi2", HTTP_POST, []() {
+    if (!authorizeWrite()) return;
+    String s = server.arg("ssid"), p = server.arg("password");
+    s.trim();
+    if (s.isEmpty() || s.length() > 32 || p.length() > 63)
+      return jsonReply(400, "Check Wi-Fi name and password length", true);
+    if (p.length() > 0 && p.length() < 8)
+      return jsonReply(400, "Wi-Fi password needs at least 8 characters", true);
+    if (s != wifiSSID2 && p.isEmpty())
+      return jsonReply(400, "Enter password for the new Wi-Fi network", true);
+    wifiSSID2 = s;
+    // Keep setup on screen until Wi-Fi association succeeds.
+    setupConnectedAt = 0;
+    if (p.length()) wifiPassword2 = p;
+    prefs.putString("wifiSSID2", wifiSSID2);
+    prefs.putString("wifiPass2", wifiPassword2);
+    jsonReply(200, "Backup Wi-Fi saved; will be used when primary is unavailable");
+    if (WiFi.status() != WL_CONNECTED) lastWiFiAttempt = millis() - WIFI_RETRY_MS;
+  });
+  server.on("/api/weather", HTTP_POST, []() {
+    if (!authorizeWrite()) return;
+    String c = server.arg("city"), region = server.arg("state"), country = server.arg("country");
+    String key = server.arg("apiKey");
+    c.trim(); region.trim(); country.trim(); key.trim();
+    if (c.isEmpty() || region.isEmpty() || country.isEmpty() ||
+        c.length() > 64 || region.length() > 64 || country.length() > 64)
+      return jsonReply(400, "Enter a valid city, state and country", true);
+    if (key.length() > 128) return jsonReply(400, "API key is too long", true);
+    String effectiveKey = key.isEmpty() ? weatherKey : key;
+    if (effectiveKey.isEmpty()) return jsonReply(400, "Enter an OpenWeatherMap API key", true);
+    if (WiFi.status() != WL_CONNECTED)
+      return jsonReply(503, "Connect Desk-Companion to internet Wi-Fi to find your city", true);
+    float resolvedLat = 0, resolvedLon = 0;
+    if (!resolveLocation(c, region, country, effectiveKey, resolvedLat, resolvedLon))
+      return jsonReply(422, "Location not found. Check city, full state name and country (e.g. India or IN)", true);
+    cityLabel = c; locationState = region; locationCountry = country;
+    weatherLat = resolvedLat; weatherLon = resolvedLon; weatherKey = effectiveKey;
+    weatherConfigured = true;
+    prefs.putString("city", cityLabel);
+    prefs.putString("state", locationState);
+    prefs.putString("country", locationCountry);
+    prefs.putFloat("lat", weatherLat);
+    prefs.putFloat("lon", weatherLon);
+    prefs.putBool("located", true);
+    if (key.length()) prefs.putString("weatherKey", weatherKey);
+    lastWeatherUpdate = 0; // Next loop fetches weather + location-specific UTC offset.
+    jsonReply(200, "Location saved. Clock will sync to the city's local time.");
+  });
+  server.on("/api/sleep", HTTP_POST, []() {
+    if (!authorizeWrite()) return;
+    jsonReply(200, "Desk-Companion is going to sleep");
+    triggerDeepSleep();
+  });
+  server.on("/api/restart", HTTP_POST, []() {
+    if (!authorizeWrite()) return;
+    jsonReply(200, "Restarting");
+    delay(300);
+    ESP.restart();
+  });
+  server.onNotFound([]() {
+    if (server.uri().startsWith("/api/")) {
+      server.send(404, "application/json", "{\"error\":\"Unknown API endpoint\"}");
+    } else {
+      redirectToCaptivePortal();
+    }
+  });
 }
