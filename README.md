@@ -20,6 +20,14 @@ It combines a 128×64 OLED display, expressive facial animations, touch interact
 
 The project is designed to be affordable, customizable, and beginner-friendly.
 
+## 📸 Project Gallery
+
+Real photos of the Desk-Companion prototype featuring the Seeed Studio XIAO board, touch sensor, and OLED display.
+
+| Prototype view 1 | Prototype view 2 | Prototype view 3 |
+|:---:|:---:|:---:|
+| ![Desk-Companion prototype — OLED demonstration, view 1](assets/desk-companion-demo-01.jpeg) | ![Desk-Companion prototype — OLED demonstration, view 2](assets/desk-companion-demo-02.jpeg) | ![Desk-Companion prototype — OLED demonstration, view 3](assets/desk-companion-demo-03.jpeg) |
+
 ## Features
 
 - 66 animated facial emotions
@@ -334,12 +342,17 @@ An internet connection is required for online weather updates and initial time s
 Desk-Companion/
 ├── Firmware/
 │   ├── Desk-Companion-XIAO-ESP32-C3.ino
-│   └── Desk-Companion-XIAO-ESP32-S3.ino
+│   ├── Desk-Companion-XIAO-ESP32-S3.ino
+│   └── Firmware.md
+├── assets/
+│   ├── desk-companion-demo-01.jpeg
+│   ├── desk-companion-demo-02.jpeg
+│   └── desk-companion-demo-03.jpeg
 ├── README.md
 └── LICENSE
 ```
 
-The web dashboard is embedded in each board-specific firmware sketch. There are no separate `dashboard/`, `docs/`, or `assets/` directories in the current repository.
+The dashboard is embedded in each board-specific firmware sketch. The `assets/` directory contains the project photos, and `Firmware/Firmware.md` provides additional firmware documentation.
 
 ## Troubleshooting
 
