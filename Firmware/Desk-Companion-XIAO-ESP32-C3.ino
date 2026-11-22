@@ -26,7 +26,133 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <ArduinoOTA.h>
+#include <WiFiClientSecure.h>
+#include <Update.h>
 #include <esp_mac.h>
+
+
+// Stable releases only. Development builds are marked v0.0.0 until a tagged release is compiled.
+#ifndef DESK_FIRMWARE_VERSION
+#define DESK_FIRMWARE_VERSION "v0.0.0"
+#endif
+#if CONFIG_IDF_TARGET_ESP32C3
+static const char* OTA_ASSET_NAME = "desk-companion-c3-ota.bin";
+#elif CONFIG_IDF_TARGET_ESP32S3
+static const char* OTA_ASSET_NAME = "desk-companion-s3-ota.bin";
+#else
+#error "Unsupported Desk-Companion OTA target"
+#endif
+static const unsigned long OTA_CHECK_INTERVAL_MS = 21600000UL; // Six hours.
+String latestStableVersion, latestStableUrl;
+bool stableUpdateAvailable = false, otaInstallRequested = false, otaInstalling = false;
+unsigned long lastStableCheck = 0, updateNoticeUntil = 0;
+bool updateNoticeShown = false;
+
+int compareStableVersion(const String& a, const String& b) {
+  int av[3] = {0,0,0}, bv[3] = {0,0,0};
+  String sa = a.startsWith("v") ? a.substring(1) : a;
+  String sb = b.startsWith("v") ? b.substring(1) : b;
+  for (int i=0; i<3; ++i) {
+    int da=sa.indexOf('.'), db=sb.indexOf('.');
+    String pa=da<0?sa:sa.substring(0,da), pb=db<0?sb:sb.substring(0,db);
+    if (pa.isEmpty() || pb.isEmpty()) return 0;
+    for (unsigned j=0;j<pa.length();++j) if (!isDigit(pa[j])) return 0;
+    for (unsigned j=0;j<pb.length();++j) if (!isDigit(pb[j])) return 0;
+    av[i]=pa.toInt(); bv[i]=pb.toInt();
+    sa=da<0?"":sa.substring(da+1); sb=db<0?"":sb.substring(db+1);
+  }
+  for (int i=0;i<3;++i) if (av[i]!=bv[i]) return av[i]>bv[i]?1:-1;
+  return 0;
+}
+
+void checkStableRelease() {
+  if (WiFi.status()!=WL_CONNECTED || otaInstalling) return;
+  lastStableCheck=millis();
+  WiFiClientSecure tls;
+  // GitHub HTTPS transport. Certificate pinning can be added in a future release.
+  tls.setInsecure();
+  HTTPClient http;
+  http.setTimeout(8500);
+  if (!http.begin(tls,"https://api.github.com/repos/Robonavigators/Desk-Companion/releases/latest")) return;
+  http.addHeader("Accept","application/vnd.github+json");
+  http.addHeader("User-Agent","Desk-Companion-OTA");
+  if (http.GET()==HTTP_CODE_OK) {
+    JsonDocument doc;
+    DeserializationError error=deserializeJson(doc,http.getStream());
+    if (!error && !doc["draft"].as<bool>() && !doc["prerelease"].as<bool>()) {
+      String tag=doc["tag_name"].as<String>();
+      String assetUrl;
+      JsonArray assets=doc["assets"].as<JsonArray>();
+      for (JsonObject asset:assets) {
+        if (asset["name"].as<String>()==OTA_ASSET_NAME) {
+          assetUrl=asset["browser_download_url"].as<String>();
+          break;
+        }
+      }
+      // Only official GitHub release downloads are accepted.
+      if (tag.length() && assetUrl.startsWith("https://github.com/Robonavigators/Desk-Companion/releases/download/") &&
+          compareStableVersion(tag,DESK_FIRMWARE_VERSION)>0) {
+        latestStableVersion=tag;
+        latestStableUrl=assetUrl;
+        stableUpdateAvailable=true;
+      } else {
+        stableUpdateAvailable=false;
+        latestStableUrl="";
+      }
+    }
+  }
+  http.end();
+}
+
+void drawStableUpdateNotice() {
+  u8g2.clearBuffer();
+  u8g2.drawFrame(0,0,128,64);
+  // Compact monochrome download icon.
+  u8g2.drawLine(64,7,64,22);
+  u8g2.drawLine(59,17,64,22);
+  u8g2.drawLine(69,17,64,22);
+  u8g2.drawHLine(55,26,18);
+  u8g2.setFont(u8g2_font_6x10_tf);
+  u8g2.drawStr(18,39,"Update Available");
+  u8g2.setFont(u8g2_font_5x7_tf);
+  u8g2.drawStr(9,49,"Go to Web Dashboard");
+  u8g2.drawStr(45,58,"to install");
+}
+
+void drawStableUpdateIcon() {
+  // Quiet static icon, only while the normal screen is already awake.
+  u8g2.setDrawColor(0);
+  u8g2.drawBox(115,0,13,14);
+  u8g2.setDrawColor(1);
+  u8g2.drawVLine(121,2,6);
+  u8g2.drawLine(118,6,121,9);
+  u8g2.drawLine(124,6,121,9);
+  u8g2.drawHLine(117,11,9);
+}
+
+void installStableRelease() {
+  if (!stableUpdateAvailable || latestStableUrl.isEmpty() || WiFi.status()!=WL_CONNECTED) return;
+  otaInstalling=true;
+  WiFiClientSecure tls;
+  tls.setInsecure();
+  HTTPClient http;
+  http.setTimeout(20000);
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  if (!http.begin(tls,latestStableUrl)) { otaInstalling=false; return; }
+  int code=http.GET();
+  int size=http.getSize();
+  if (code==HTTP_CODE_OK && size>0 && Update.begin((size_t)size,U_FLASH)) {
+    size_t written=Update.writeStream(http.getStream());
+    if (written==(size_t)size && Update.end(true) && Update.isFinished()) {
+      http.end();
+      delay(400);
+      ESP.restart();
+    } else Update.abort();
+  }
+  http.end();
+  otaInstalling=false;
+  Serial.println("Stable OTA installation failed; existing firmware retained.");
+}
 
 // --- Generic device configuration; no personal credentials in firmware ---
 #define TTP_PIN 3  // XIAO ESP32-C3 D1 / GPIO3
@@ -537,6 +663,7 @@ void setup() {
 
 void loop() {
   if (recoveryAPActive) captiveDns.processNextRequest(); // Setup or Wi-Fi recovery.
+  if (otaInstallRequested) { otaInstallRequested=false; installStableRelease(); }
   server.handleClient();
   if (isGoingToSleep) {
     if (millis() - sleepTimer >= 4000) {
@@ -634,6 +761,7 @@ void loop() {
 
   handleTouch();
   if (isGoingToSleep) return;
+  if (WiFi.status()==WL_CONNECTED && !otaInstalling && (lastStableCheck==0 || millis()-lastStableCheck>=OTA_CHECK_INTERVAL_MS)) checkStableRelease();
   if (WiFi.status() == WL_CONNECTED && weatherConfigured &&
       (millis() - lastWeatherUpdate > 900000 || lastWeatherUpdate == 0)) {
     fetchWeather(); fetchForecast(); lastWeatherUpdate = millis();
@@ -671,6 +799,10 @@ void loop() {
     } else if (displayState == 1) drawTimeScreen(ptm);
     else if (displayState == 2) drawCurrentWeather();
     else if (displayState == 3) drawForecastScreen();
+    if (stableUpdateAvailable) {
+      if (updateNoticeUntil && (long)(updateNoticeUntil-millis())>0) drawStableUpdateNotice();
+      else drawStableUpdateIcon();
+    }
     u8g2.sendBuffer();
   }
 }
@@ -682,6 +814,7 @@ void handleTouch() {
 
   if (touched && !isPressing) {
     isPressing = true;
+    if (stableUpdateAvailable && !updateNoticeShown) { updateNoticeUntil=now+3000; updateNoticeShown=true; }
     btnPressTime = now;
     longPressHandled = false;
   }
@@ -982,6 +1115,7 @@ const char DASHBOARD_HTML[] PROGMEM = R"DBHTML(<!DOCTYPE html>
 #emotionIntervalPanel[hidden]{display:none!important}</style></head><body><div class="layout">
 <aside class="sidebar"><div class="brand"><div class="mark"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l4 4v10l-4 4H8l-4-4V7z"/><path d="M9 10h.01M15 10h.01" stroke-width="3"/><path d="M8.5 15c2.2 2 4.8 2 7 0"/></svg></div><div><div class="brand-name">Desk-Companion</div><div class="brand-sub">CONTROL CENTER</div></div></div><nav aria-label="Main navigation"><div class="navgroup">Workspace</div><a class="navitem active" href="#overview"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg> Overview</a><a class="navitem" href="#display"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 22h8M12 18v4"/></svg> Display controls</a><a class="navitem" href="#device"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg> Device status</a><div class="navgroup" style="margin-top:29px">Configuration</div><a class="navitem" href="#network"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg> Wi-Fi network</a><a class="navitem" href="#weather"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a4 4 0 0 1-1-7.9A7 7 0 0 1 18 10a4.5 4.5 0 0 1 0 9H6z"/></svg> Weather & time</a></nav><div class="sidebar-bottom"><svg class="icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Local-first control.<br>No cloud login required.</span></div></aside>
 <main class="main" id="overview"><div class="top"><div><h1 class="page-title">Overview</h1><p class="lead">Manage your Desk-Companion, all in one place.</p></div><div class="badge offline" id="connectionBadge"><span class="pulse"></span><span id="conn">Connecting</span></div></div>
+<section class="card" id="firmwareUpdate" style="margin-bottom:18px;padding:15px 20px" aria-live="polite"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg><div style="flex:1"><strong>Firmware updates</strong><div id="firmwareUpdateText" class="hint" style="margin:2px 0 0">Checking stable releases…</div></div><button class="btn primary" id="installFirmware" type="button" hidden>Install update</button></div></section>
 <div class="hero"><div><div class="eyebrow">MEET YOUR COMPANION</div><h2>Hello, human.</h2><p>Your pocket-sized desk companion is ready whenever you are.</p></div><div class="hero-face" role="img" aria-label="Smiling Desk-Companion illustration"><div class="face-eyes"><span></span><span></span></div><div class="face-mouth"></div></div></div>
 <div class="metrics"><div class="metric"><div class="metric-icon"><svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg></div><div><div class="metric-label">Network</div><div class="metric-value" id="wifilabel">—</div></div></div><div class="metric"><div class="metric-icon"><svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3a2 2 0 0 1 4 0v10.5a4 4 0 1 1-4 0V3z"/><path d="M12 9v9"/></svg></div><div><div class="metric-label">ESP32-C3 chip temperature</div><div class="metric-value" id="temperature">—</div></div></div><div class="metric"><div class="metric-icon"><svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><div><div class="metric-label">Uptime</div><div class="metric-value" id="uptime">—</div></div></div></div>
 <div class="two"><section class="card" id="display"><div class="cardhead"><h3>Display controls</h3><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 22h8M12 18v4"/></svg></div><p class="card-sub">Choose what appears on the OLED display.</p><div class="screenBtns" id="screens"><button data-screen="0"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 14c2 3 6 3 8 0M9 9h.01M15 9h.01" stroke-width="2.2"/></svg> Emotions</button><button data-screen="1"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Clock</button><button data-screen="2"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a4 4 0 0 1-1-7.9A7 7 0 0 1 18 10a4.5 4.5 0 0 1 0 9H6z"/></svg> Weather</button><button data-screen="3"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18"/></svg> Forecast</button></div><div class="field" style="margin-top:22px"><label for="emotion">Emotion mode</label><div class="emotion-picker" id="emotionPicker">
@@ -1125,7 +1259,9 @@ document.addEventListener('keydown',e=>{
   }
 });
 async function request(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data)});const o=await r.json();if(!r.ok)throw Error(o.error||'Request failed');msg(o.message||'Saved!');return o}
-let statusBusy=false;async function status(){if(statusBusy)return;statusBusy=true;const started=performance.now();const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),3000);try{const r=await fetch('/api/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('Not connected');state=await r.json();$('conn').textContent='Demo mode';$('connectionBadge').classList.remove('offline');$('wifilabel').textContent=state.wifiConnected?state.ssid:'Offline / AP';$('temperature').textContent=Number.isFinite(state.cpuTempC)?state.cpuTempC.toFixed(1)+'°C':'Unavailable';$('timeZoneStatus').textContent=state.weatherReady?'UTC '+(state.offset>=0?'+':'')+(state.offset/60).toFixed(2)+' h':'Awaiting weather sync';$('uptime').textContent=Math.floor(state.uptime/3600)+'h '+(Math.floor(state.uptime/60)%60)+'m';$('ap').textContent=state.ap;$('ip').textContent=state.ip;$('emo').textContent=emotions[state.emotion]||'—';document.querySelectorAll('#screens button').forEach(b=>b.classList.toggle('active',+b.dataset.screen===state.screen));chosenEmotion=state.manualEmotion?state.emotion:-1;$('emotionCurrent').textContent='Mode: '+(chosenEmotion<0?'Automatic — all 66 emotions':emotions[chosenEmotion]||'Unknown');syncEmotionInterval();if($('emotionPicker').classList.contains('open'))renderEmotions();if(!filled){$('ssid').value=state.savedSSID||'';$('ssid2').value=state.savedSSID2||'';$('city').value=state.city||'';$('state').value=state.state||'';$('country').value=state.country||'';filled=true}}catch(e){$('conn').textContent='Offline';$('connectionBadge').classList.add('offline')}finally{clearTimeout(timeout);statusBusy=false}}
+let statusBusy=false;async function status(){if(statusBusy)return;statusBusy=true;const started=performance.now();const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),3000);try{const r=await fetch('/api/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('Not connected');state=await r.json();const up=$('installFirmware');up.hidden=!state.updateAvailable;$('firmwareUpdateText').textContent=state.updateAvailable?'Stable '+state.latestVersion+' available — install when convenient.':(state.firmwareVersion==='v0.0.0'?'Development build — stable update checks enabled.':'Current version '+state.firmwareVersion+' · No newer stable release.');$('conn').textContent='Demo mode';$('connectionBadge').classList.remove('offline');$('wifilabel').textContent=state.wifiConnected?state.ssid:'Offline / AP';$('temperature').textContent=Number.isFinite(state.cpuTempC)?state.cpuTempC.toFixed(1)+'°C':'Unavailable';$('timeZoneStatus').textContent=state.weatherReady?'UTC '+(state.offset>=0?'+':'')+(state.offset/60).toFixed(2)+' h':'Awaiting weather sync';$('uptime').textContent=Math.floor(state.uptime/3600)+'h '+(Math.floor(state.uptime/60)%60)+'m';$('ap').textContent=state.ap;$('ip').textContent=state.ip;$('emo').textContent=emotions[state.emotion]||'—';document.querySelectorAll('#screens button').forEach(b=>b.classList.toggle('active',+b.dataset.screen===state.screen));chosenEmotion=state.manualEmotion?state.emotion:-1;$('emotionCurrent').textContent='Mode: '+(chosenEmotion<0?'Automatic — all 66 emotions':emotions[chosenEmotion]||'Unknown');syncEmotionInterval();if($('emotionPicker').classList.contains('open'))renderEmotions();if(!filled){$('ssid').value=state.savedSSID||'';$('ssid2').value=state.savedSSID2||'';$('city').value=state.city||'';$('state').value=state.state||'';$('country').value=state.country||'';filled=true}}catch(e){$('conn').textContent='Offline';$('connectionBadge').classList.add('offline')}finally{clearTimeout(timeout);statusBusy=false}}
+async function installFirmwareUpdate(){if(!await confirmAction('Install stable firmware update?','Desk-Companion will download the official release, restart, and briefly disconnect. Keep power connected.','Install update'))return;const b=$('installFirmware');b.disabled=true;try{const r=await fetch('/api/update/install',{method:'POST'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not start update');$('firmwareUpdateText').textContent='Installing update… Keep device powered.';b.hidden=true}catch(e){msg(e.message,true);b.disabled=false}}
+$('installFirmware').addEventListener('click',installFirmwareUpdate);
 async function call(path,data){try{await request(path,data);await status()}catch(e){msg(e.message,true)}}
 document.querySelectorAll('#screens button').forEach(b=>b.addEventListener('click',()=>call('/api/screen',{screen:b.dataset.screen})));$('next').onclick=()=>call('/api/screen',{screen:(state.screen+1)%4});$('refresh').onclick=status;$('sleep').onclick=async()=>{if(await confirmAction('Put Desk-Companion to sleep?','The display and web server will stop until you touch the sensor to wake it.','Sleep now'))await call('/api/sleep',{})};$('reboot').onclick=async()=>{if(await confirmAction('Restart Desk-Companion?','The dashboard will disconnect briefly while your device restarts.','Restart device',true))await call('/api/restart',{})};$('wifiForm').onsubmit=e=>{e.preventDefault();call('/api/wifi',{ssid:$('ssid').value,password:$('password').value})};$('wifiForm2').onsubmit=e=>{e.preventDefault();call('/api/wifi2',{ssid:$('ssid2').value,password:$('password2').value})};$('weatherForm').onsubmit=e=>{e.preventDefault();call('/api/weather',{city:$('city').value,state:$('state').value,country:$('country').value,apiKey:$('apiKey').value})};
 async function scanWiFi(second=false){const btn=$(second?'scanWifi2':'scanWifi'),box=$(second?'scanResults2':'scanResults');btn.disabled=true;btn.textContent='Scanning…';box.classList.add('visible');box.replaceChildren();const note=document.createElement('div');note.className='scanhint';note.textContent='Looking for nearby 2.4 GHz networks…';box.append(note);try{const r=await fetch('/api/wifi/scan',{cache:'no-store'});const data=await r.json();if(!r.ok)throw Error(data.error||'Wi-Fi scan failed');box.replaceChildren();if(!data.networks.length){const n=document.createElement('div');n.className='scanhint';n.textContent='No visible networks found. You can still type an SSID manually.';box.append(n)}else{for(const net of data.networks){const b=document.createElement('button');b.type='button';b.className='scanitem';const name=document.createElement('span');name.textContent=net.ssid;const meta=document.createElement('span');meta.className='scanmeta';meta.textContent=net.rssi+' dBm · '+(net.secure?'Secured':'Open');b.append(name,meta);b.addEventListener('click',()=>{$(second?'ssid2':'ssid').value=net.ssid;box.classList.remove('visible');$(second?'password2':'password').focus()});box.append(b)}}}catch(err){box.replaceChildren();const n=document.createElement('div');n.className='scanhint';n.textContent='Scan unavailable: '+err.message;box.append(n)}finally{btn.disabled=false;btn.innerHTML='<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg> Scan Wi-Fi'}}
@@ -1206,6 +1342,10 @@ void setupWebServer() {
     d["ap"] = apSSID;
     d["ip"] = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
     d["uptime"] = millis() / 1000;
+    d["firmwareVersion"] = DESK_FIRMWARE_VERSION;
+    d["latestVersion"] = latestStableVersion;
+    d["updateAvailable"] = stableUpdateAvailable;
+    d["updateInstalling"] = otaInstalling;
     d["screen"] = displayState;
     d["emotion"] = (int)currentEmotion;
     d["manualEmotion"] = manualEmotion;
@@ -1223,6 +1363,19 @@ void setupWebServer() {
     server.send(200, "application/json", out);
   });
   // Scan nearby 2.4 GHz Wi-Fi networks. Never return saved credentials.
+  server.on("/api/update/check", HTTP_POST, []() {
+    if (!authorizeWrite()) return;
+    checkStableRelease();
+    jsonReply(200,stableUpdateAvailable?"Stable update available":"No newer stable release");
+  });
+  server.on("/api/update/install", HTTP_POST, []() {
+    if (!authorizeWrite()) return;
+    if (otaInstalling || otaInstallRequested) return jsonReply(409,"Update already in progress",true);
+    if (!stableUpdateAvailable || latestStableUrl.isEmpty()) return jsonReply(409,"No newer stable release available",true);
+    if (WiFi.status()!=WL_CONNECTED) return jsonReply(503,"Wi-Fi required for update",true);
+    otaInstallRequested=true;
+    jsonReply(200,"Installing stable firmware");
+  });
   server.on("/api/wifi/scan", HTTP_GET, []() {
     // A synchronous scan may briefly pause the dashboard while radio scans.
     int count = WiFi.scanNetworks(false, true);

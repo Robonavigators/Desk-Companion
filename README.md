@@ -444,3 +444,12 @@ Built using the Seeed Studio XIAO ESP32 platform, Arduino framework, U8g2, and O
 **Desk-Companion — Your desk. Your companion. Your creativity.**
 
 Made by **Robonavigators**.
+
+
+## Stable firmware updates (OLED + dashboard)
+
+Desk-Companion checks the latest **published, non-prerelease GitHub Release** approximately every six hours when connected to Wi-Fi. It does not install updates automatically. If a newer semantic version and the matching board-specific OTA application binary exist, a tiny static icon appears on the awake OLED. The first touch after an update is detected shows a brief **Update Available / Go to Web Dashboard to install** message. The sleeping screen remains off. The local Web Dashboard shows an **Install update** button and asks for confirmation before downloading and restarting.
+
+Only tagged stable releases created through the release workflow provide OTA images named `desk-companion-c3-ota.bin` and `desk-companion-s3-ota.bin`. Ordinary pushes to `main` continue to publish **merged USB web-flash binaries**, not stable OTA releases. A new stable release must use a semantic tag such as `v1.0.0` and be published after the feature is compiled and tested. Until then, there is no installable stable update. Development firmware identifies itself as `v0.0.0`.
+
+**Important:** The OTA endpoint is accessible to other devices on the same local network because the dashboard currently has no login. Use trusted home/office networks only. The updater uses HTTPS transport without certificate verification; it is not suitable for hostile networks. The updater checks chip-specific asset names and preserves the running application if a download/write fails, but successful update still depends on sufficient OTA partition space and a reliable power supply. Test on each XIAO board before releasing widely.
