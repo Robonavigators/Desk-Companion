@@ -742,15 +742,25 @@ void drawTimeScreen(struct tm *ptm) {
   u8g2.drawStr(startX + timeWidth + 2, 50, amPmStr.c_str());
 }
 
-// Custom mist symbol: three fog lines, independent of font glyph availability.
+// Dense, overlapping mist banks sized for both weather and forecast icons.
 const uint16_t WEATHER_ICON_MIST = 255;
 void drawMistIcon(int x, int y, bool small) {
-  int width = small ? 17 : 30;
-  int gap = small ? 4 : 7;
-  for (int i = 0; i < 3; i++) {
-    int offset = (i == 1) ? 4 : 0;
-    u8g2.drawHLine(x + offset, y + i * gap, width - offset);
-    if (!small) u8g2.drawHLine(x + offset, y + i * gap + 1, width - offset);
+  u8g2.setDrawColor(1);
+  if (small) {
+    // Compact 18x12 silhouette for forecast rows.
+    u8g2.drawRBox(x + 4, y,     11, 3, 1);
+    u8g2.drawRBox(x,     y + 4, 18, 4, 2);
+    u8g2.drawRBox(x + 3, y + 9, 13, 3, 1);
+  } else {
+    // Layered 32x23 fog bank, thicker than the former horizontal lines.
+    u8g2.drawRBox(x + 7, y,      23, 6, 3);
+    u8g2.drawRBox(x,     y + 7,  32, 7, 3);
+    u8g2.drawRBox(x + 4, y + 15, 27, 7, 3);
+    // Cut narrow channels to separate the dense layers.
+    u8g2.setDrawColor(0);
+    u8g2.drawHLine(x + 12, y + 6, 13);
+    u8g2.drawHLine(x + 16, y + 14, 11);
+    u8g2.setDrawColor(1);
   }
 }
 
@@ -856,7 +866,7 @@ void mapOWMCondition(int id, String &cond, uint16_t &icon) {
     cond = "Snow"; icon = 70; // snow icon
   } else if (id == 701 || id == 711 || id == 721 || id == 741) {
     cond = (id == 741) ? "Fog" : "Mist";
-    icon = WEATHER_ICON_MIST; // custom three-line fog symbol
+    icon = WEATHER_ICON_MIST; // custom layered fog-bank symbol
   } else if (id >= 731 && id <= 781) {
     cond = "Windy/Dust"; icon = 72; // wind icon
   } else {
