@@ -64,8 +64,8 @@ jobs:
             cp "$merged" "output/$target"
             test -s "output/$target"
           }
-          build_board C3 esp32:esp32:XIAO_ESP32C3 desk-companion-c3-merged.bin 4MB
-          build_board S3 esp32:esp32:XIAO_ESP32S3 desk-companion-s3-merged.bin 8MB
+          build_board C3 esp32:esp32:XIAO_ESP32C3:PartitionScheme=huge_app desk-companion-c3-merged.bin 4MB
+          build_board S3 esp32:esp32:XIAO_ESP32S3:PartitionScheme=huge_app desk-companion-s3-merged.bin 8MB
 
       - name: Validate merged flash images
         shell: bash
