@@ -444,18 +444,3 @@ Built using the Seeed Studio XIAO ESP32 platform, Arduino framework, U8g2, and O
 **Desk-Companion — Your desk. Your companion. Your creativity.**
 
 Made by **Robonavigators**.
-
-
-## Stable firmware updates (OLED + dashboard)
-
-The XIAO ESP32-C3 and ESP32-S3 check GitHub's latest **stable, published release** after Wi-Fi time synchronization and approximately every six hours. When a newer version has a matching board-specific OTA application image and SHA-256 digest, the awake display shows a quiet update icon. The first touch after detecting a release briefly displays **Update Available / Go to Web Dashboard to install**. It never wakes a sleeping OLED. The local dashboard asks for confirmation and then installs the update; firmware does not update itself without consent.
-
-### Publishing a stable release
-
-1. On GitHub, open **Actions → Publish stable Desk-Companion OTA assets → Run workflow**.
-2. Enter a version such as `v1.0.0`. The workflow compiles **both variants**, validates the binaries, and then creates one stable GitHub Release containing `desk-companion-c3-ota.bin`, `desk-companion-s3-ota.bin`, and `SHA256SUMS.txt`.
-3. Optionally, a release published through the GitHub Releases UI can also have its OTA assets attached by the release-triggered workflow; allow that workflow to finish before testing updates.
-
-Normal pushes to `main` still publish **merged USB Web Flasher binaries** to the Robonavigators website, not stable OTA releases. OTA downloads use **application** images, not merged USB images. Release assets must have GitHub-provided SHA-256 digests; incomplete releases do not trigger the install button. Development builds identify as `v0.0.0`; tagged release builds embed their actual version.
-
-The updater requires valid system time for TLS certificate checks, verifies GitHub HTTPS certificates against a selected root CA set, checks chip-specific filenames and SHA-256 digest, and aborts if transfer, digest, or the alternate OTA slot fails. Keep the device powered during install. A fresh USB installation may be required if its previous partition layout does not offer an OTA slot. The dashboard is intentionally unauthenticated: use trusted home or office networks only. Test the upgrade on each hardware variant before announcing general availability.
