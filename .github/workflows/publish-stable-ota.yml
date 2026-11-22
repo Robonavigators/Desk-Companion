@@ -77,9 +77,7 @@ jobs:
             echo "::error::Release already exists; refusing to overwrite stable firmware."
             exit 1
           fi
-          gh release create "$RELEASE_TAG" ota/*.bin ota/SHA256SUMS.txt \\
-            --target "$GITHUB_SHA" --title "$RELEASE_TAG" \\
-            --notes "Stable Desk-Companion firmware for XIAO ESP32-C3 and ESP32-S3. Install via the Web Dashboard or USB web flasher."
+          gh release create "$RELEASE_TAG" ota/*.bin ota/SHA256SUMS.txt --target "$GITHUB_SHA" --title "$RELEASE_TAG" --notes "Stable Desk-Companion firmware for XIAO ESP32-C3 and ESP32-S3. Install via the Web Dashboard or USB web flasher."
       - name: Attach OTA images to an existing GitHub-UI release
         if: github.event_name == 'release'
         env:
