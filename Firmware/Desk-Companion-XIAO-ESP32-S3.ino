@@ -27,6 +27,8 @@
 #include <Wire.h>
 #include <ArduinoOTA.h>
 #include <WiFiClientSecure.h>
+#include <mbedtls/sha256.h>
+#include <time.h>
 #include <Update.h>
 #include <esp_mac.h>
 
@@ -83,7 +85,7 @@ void setupWebServer();
 // Hardware Objects
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
-// Stable releases only. Development builds are marked v0.0.0 until a tagged release is compiled.
+// Only install newer, published GitHub Releases with a matching application image.
 #ifndef DESK_FIRMWARE_VERSION
 #define DESK_FIRMWARE_VERSION "v0.0.0"
 #endif
@@ -95,118 +97,441 @@ static const char* OTA_ASSET_NAME = "desk-companion-s3-ota.bin";
 #error "Unsupported Desk-Companion OTA target"
 #endif
 static const unsigned long OTA_CHECK_INTERVAL_MS = 21600000UL; // Six hours.
-String latestStableVersion, latestStableUrl;
+// Trusted public CA roots for GitHub API and its HTTPS release-asset redirects.
+// Certificates are public trust anchors from Mozilla's CA store (certifi).
+static const char OTA_GITHUB_ROOT_CAS[] PROGMEM = R"OTACA(
+-----BEGIN CERTIFICATE-----
+MIIDXzCCAkegAwIBAgILBAAAAAABIVhTCKIwDQYJKoZIhvcNAQELBQAwTDEgMB4G
+A1UECxMXR2xvYmFsU2lnbiBSb290IENBIC0gUjMxEzARBgNVBAoTCkdsb2JhbFNp
+Z24xEzARBgNVBAMTCkdsb2JhbFNpZ24wHhcNMDkwMzE4MTAwMDAwWhcNMjkwMzE4
+MTAwMDAwWjBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzETMBEG
+A1UEChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjCCASIwDQYJKoZI
+hvcNAQEBBQADggEPADCCAQoCggEBAMwldpB5BngiFvXAg7aEyiie/QV2EcWtiHL8
+RgJDx7KKnQRfJMsuS+FggkbhUqsMgUdwbN1k0ev1LKMPgj0MK66X17YUhhB5uzsT
+gHeMCOFJ0mpiLx9e+pZo34knlTifBtc+ycsmWQ1z3rDI6SYOgxXG71uL0gRgykmm
+KPZpO/bLyCiR5Z2KYVc3rHQU3HTgOu5yLy6c+9C7v/U9AOEGM+iCK65TpjoWc4zd
+QQ4gOsC0p6Hpsk+QLjJg6VfLuQSSaGjlOCZgdbKfd/+RFO+uIEn8rUAVSNECMWEZ
+XriX7613t2Saer9fwRPvm2L7DWzgVGkWqQPabumDk3F2xmmFghcCAwEAAaNCMEAw
+DgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFI/wS3+o
+LkUkrk1Q+mOai97i3Ru8MA0GCSqGSIb3DQEBCwUAA4IBAQBLQNvAUKr+yAzv95ZU
+RUm7lgAJQayzE4aGKAczymvmdLm6AC2upArT9fHxD4q/c2dKg8dEe3jgr25sbwMp
+jjM5RcOO5LlXbKr8EpbsU8Yt5CRsuZRj+9xTaGdWPoO4zzUhw8lo/s7awlOqzJCK
+6fBdRoyV3XpYKBovHd7NADdBj+1EbddTKJd+82cEHhXXipa0095MJ6RMG3NzdvQX
+mcIfeg7jLQitChws/zyrVQ4PkX4268NXSb7hLi18YIvDQVETI53O9zJrlAGomecs
+Mx86OyXShkDOOyyGeMlhLxS67ttVb9+E7gUJTb0o2HLO02JQZR7rkpeDMdmztcpH
+WD9f
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh
+MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
+d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH
+MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT
+MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j
+b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCtSnX/RrohCgiN9RlUyfuI
+2/Ou8jqJkTx65qsGGmvPrC3oXgkkRLpimn7Wo6h+4FR1IAWsULecYxpsMNzaHxmx
+1x7e/dfgy5SDN67sH0NO3Xss0r0upS/kqbitOtSZpLYl6ZtrAGCSYP9PIUkY92eQ
+q2EGnI/yuum06ZIya7XzV+hdG82MHauVBJVJ8zUtluNJbd134/tJS7SsVQepj5Wz
+tCO7TG1F8PapspUwtP1MVYwnSlcUfIKdzXOS0xZKBgyMUNGPHgm+F6HmIcr9g+UQ
+vIOlCsRnKPZzFBQ9RnbDhxSJITRNrw9FDKZJobq7nMWxM4MphQIDAQABo0IwQDAP
+BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQUTiJUIBiV
+5uNu5g/6+rkS7QYXjzkwDQYJKoZIhvcNAQELBQADggEBAGBnKJRvDkhj6zHd6mcY
+1Yl9PMWLSn/pvtsrF9+wX3N3KjITOYFnQoQj8kVnNeyIv/iPsGEMNKSuIEyExtv4
+NeF22d+mQrvHRAiGfzZ0JFrabA0UWTW98kndth/Jsw1HKj2ZL7tcu7XUIOGZX1NG
+Fdtom/DzMNU+MeKNhJ7jitralj41E6Vf8PlwUHBHQRFXGU7Aj64GxJUTFy8bJZ91
+8rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTe
+pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl
+MrY=
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIICPzCCAcWgAwIBAgIQBVVWvPJepDU1w6QP1atFcjAKBggqhkjOPQQDAzBhMQsw
+CQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3d3cu
+ZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBHMzAe
+Fw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVTMRUw
+EwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20x
+IDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEczMHYwEAYHKoZIzj0CAQYF
+K4EEACIDYgAE3afZu4q4C/sLfyHS8L6+c/MzXRq8NOrexpu80JX28MzQC7phW1FG
+fp4tn+6OYwwX7Adw9c+ELkCDnOg/QW07rdOkFFk2eJ0DQ+4QE2xy3q6Ip6FrtUPO
+Z9wj/wMco+I+o0IwQDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAd
+BgNVHQ4EFgQUs9tIpPmhxdiuNkHMEWNpYim8S8YwCgYIKoZIzj0EAwMDaAAwZQIx
+AK288mw/EkrRLTnDCgmXc/SINoyIJ7vmiI1Qhadj+Z4y3maTD/HMsQmP3Wyr+mt/
+oAIwOWZbwmSNuJ5Q3KjVSaLtx9zRSX8XAbjIho9OjIgrqJqpisXRAL34VOKa5Vt8
+sycX
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIF3jCCA8agAwIBAgIQAf1tMPyjylGoG7xkDjUDLTANBgkqhkiG9w0BAQwFADCB
+iDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0pl
+cnNleSBDaXR5MR4wHAYDVQQKExVUaGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNV
+BAMTJVVTRVJUcnVzdCBSU0EgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkwHhcNMTAw
+MjAxMDAwMDAwWhcNMzgwMTE4MjM1OTU5WjCBiDELMAkGA1UEBhMCVVMxEzARBgNV
+BAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNleSBDaXR5MR4wHAYDVQQKExVU
+aGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMTJVVTRVJUcnVzdCBSU0EgQ2Vy
+dGlmaWNhdGlvbiBBdXRob3JpdHkwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIK
+AoICAQCAEmUXNg7D2wiz0KxXDXbtzSfTTK1Qg2HiqiBNCS1kCdzOiZ/MPans9s/B
+3PHTsdZ7NygRK0faOca8Ohm0X6a9fZ2jY0K2dvKpOyuR+OJv0OwWIJAJPuLodMkY
+tJHUYmTbf6MG8YgYapAiPLz+E/CHFHv25B+O1ORRxhFnRghRy4YUVD+8M/5+bJz/
+Fp0YvVGONaanZshyZ9shZrHUm3gDwFA66Mzw3LyeTP6vBZY1H1dat//O+T23LLb2
+VN3I5xI6Ta5MirdcmrS3ID3KfyI0rn47aGYBROcBTkZTmzNg95S+UzeQc0PzMsNT
+79uq/nROacdrjGCT3sTHDN/hMq7MkztReJVni+49Vv4M0GkPGw/zJSZrM233bkf6
+c0Plfg6lZrEpfDKEY1WJxA3Bk1QwGROs0303p+tdOmw1XNtB1xLaqUkL39iAigmT
+Yo61Zs8liM2EuLE/pDkP2QKe6xJMlXzzawWpXhaDzLhn4ugTncxbgtNMs+1b/97l
+c6wjOy0AvzVVdAlJ2ElYGn+SNuZRkg7zJn0cTRe8yexDJtC/QV9AqURE9JnnV4ee
+UB9XVKg+/XRjL7FQZQnmWEIuQxpMtPAlR1n6BB6T1CZGSlCBst6+eLf8ZxXhyVeE
+Hg9j1uliutZfVS7qXMYoCAQlObgOK6nyTJccBz8NUvXt7y+CDwIDAQABo0IwQDAd
+BgNVHQ4EFgQUU3m/WqorSs9UgOHYm8Cd8rIDZsswDgYDVR0PAQH/BAQDAgEGMA8G
+A1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEMBQADggIBAFzUfA3P9wF9QZllDHPF
+Up/L+M+ZBn8b2kMVn54CVVeWFPFSPCeHlCjtHzoBN6J2/FNQwISbxmtOuowhT6KO
+VWKR82kV2LyI48SqC/3vqOlLVSoGIG1VeCkZ7l8wXEskEVX/JJpuXior7gtNn3/3
+ATiUFJVDBwn7YKnuHKsSjKCaXqeYalltiz8I+8jRRa8YFWSQEg9zKC7F4iRO/Fjs
+8PRF/iKz6y+O0tlFYQXBl2+odnKPi4w2r78NBc5xjeambx9spnFixdjQg3IM8WcR
+iQycE0xyNN+81XHfqnHd4blsjDwSXWXavVcStkNr/+XeTWYRUc+ZruwXtuhxkYze
+Sf7dNXGiFSeUHM9h4ya7b6NnJSFd5t0dCy5oGzuCr+yDZ4XUmFF0sbmZgIn/f3gZ
+XHlKYC6SQK5MNyosycdiyA5d9zZbyuAlJQG03RoHnHcAP9Dc1ew91Pq7P8yF1m9/
+qS3fuQL39ZeatTXaw2ewh0qpKJ4jjv9cJ2vhsE/zB+4ALtRZh8tSQZXq9EfX7mRB
+VXyNWQKV3WKdwrnuWih0hKWbt5DHDAff9Yk2dDLWKMGwsAvgnEzDHNb842m1R0aB
+L6KCq9NjRHDEjf8tM7qtj3u1cIiuPhnPQCjY/MiQu12ZIvVS5ljFH4gxQ+6IHdfG
+jjxDah2nGN59PRbxYvnKkKj9
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIICjzCCAhWgAwIBAgIQXIuZxVqUxdJxVt7NiYDMJjAKBggqhkjOPQQDAzCBiDEL
+MAkGA1UEBhMCVVMxEzARBgNVBAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNl
+eSBDaXR5MR4wHAYDVQQKExVUaGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMT
+JVVTRVJUcnVzdCBFQ0MgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkwHhcNMTAwMjAx
+MDAwMDAwWhcNMzgwMTE4MjM1OTU5WjCBiDELMAkGA1UEBhMCVVMxEzARBgNVBAgT
+Ck5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNleSBDaXR5MR4wHAYDVQQKExVUaGUg
+VVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMTJVVTRVJUcnVzdCBFQ0MgQ2VydGlm
+aWNhdGlvbiBBdXRob3JpdHkwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQarFRaqflo
+I+d61SRvU8Za2EurxtW20eZzca7dnNYMYf3boIkDuAUU7FfO7l0/4iGzzvfUinng
+o4N+LZfQYcTxmdwlkWOrfzCjtHDix6EznPO/LlxTsV+zfTJ/ijTjeXmjQjBAMB0G
+A1UdDgQWBBQ64QmG1M8ZwpZ2dEl23OA1xmNjmjAOBgNVHQ8BAf8EBAMCAQYwDwYD
+VR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAwNoADBlAjA2Z6EWCNzklwBBHU6+4WMB
+zzuqQhFkoJ2UOQIReVx7Hfpkue4WQrO/isIJxOzksU0CMQDpKmFHjFJKS04YcPbW
+RNZu9YO6bVi9JNlWSOrvxKJGgYhqOkbRqZtNyWHa0V1Xahg=
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
+TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
+cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
+WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
+ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
+MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
+h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
+0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
+A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
+T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
+B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
+B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
+KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
+OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
+jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
+qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
+rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
+HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
+hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
+ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
+3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
+NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
+ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
+TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
+jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
+oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
+4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
+mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
+emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
+ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
+b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
+b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
+ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
+9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
+IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
+VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
+93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
+jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
+AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
+A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
+U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wUs
+N+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90vv
+o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU
+5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy
+rqXRfboQnoZsG4q5WTP468SQvvG5
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIFqDCCA5CgAwIBAgIQHtOXCV/YtLNHcB6qvn9FszANBgkqhkiG9w0BAQwFADBl
+MQswCQYDVQQGEwJVUzEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMTYw
+NAYDVQQDEy1NaWNyb3NvZnQgUlNBIFJvb3QgQ2VydGlmaWNhdGUgQXV0aG9yaXR5
+IDIwMTcwHhcNMTkxMjE4MjI1MTIyWhcNNDIwNzE4MjMwMDIzWjBlMQswCQYDVQQG
+EwJVUzEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMTYwNAYDVQQDEy1N
+aWNyb3NvZnQgUlNBIFJvb3QgQ2VydGlmaWNhdGUgQXV0aG9yaXR5IDIwMTcwggIi
+MA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQDKW76UM4wplZEWCpW9R2LBifOZ
+Nt9GkMml7Xhqb0eRaPgnZ1AzHaGm++DlQ6OEAlcBXZxIQIJTELy/xztokLaCLeX0
+ZdDMbRnMlfl7rEqUrQ7eS0MdhweSE5CAg2Q1OQT85elss7YfUJQ4ZVBcF0a5toW1
+HLUX6NZFndiyJrDKxHBKrmCk3bPZ7Pw71VdyvD/IybLeS2v4I2wDwAW9lcfNcztm
+gGTjGqwu+UcF8ga2m3P1eDNbx6H7JyqhtJqRjJHTOoI+dkC0zVJhUXAoP8XFWvLJ
+jEm7FFtNyP9nTUwSlq31/niol4fX/V4ggNyhSyL71Imtus5Hl0dVe49FyGcohJUc
+aDDv70ngNXtk55iwlNpNhTs+VcQor1fznhPbRiefHqJeRIOkpcrVE7NLP8TjwuaG
+YaRSMLl6IE9vDzhTyzMMEyuP1pq9KsgtsRx9S1HKR9FIJ3Jdh+vVReZIZZ2vUpC6
+W6IYZVcSn2i51BVrlMRpIpj0M+Dt+VGOQVDJNE92kKz8OMHY4Xu54+OU4UZpyw4K
+UGsTuqwPN1q3ErWQgR5WrlcihtnJ0tHXUeOrO8ZV/R4O03QK0dqq6mm4lyiPSMQH
++FJDOvTKVTUssKZqwJz58oHhEmrARdlns87/I6KJClTUFLkqqNfs+avNJVgyeY+Q
+W5g5xAgGwax/Dj0ApQIDAQABo1QwUjAOBgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/
+BAUwAwEB/zAdBgNVHQ4EFgQUCctZf4aycI8awznjwNnpv7tNsiMwEAYJKwYBBAGC
+NxUBBAMCAQAwDQYJKoZIhvcNAQEMBQADggIBAKyvPl3CEZaJjqPnktaXFbgToqZC
+LgLNFgVZJ8og6Lq46BrsTaiXVq5lQ7GPAJtSzVXNUzltYkyLDVt8LkS/gxCP81OC
+gMNPOsduET/m4xaRhPtthH80dK2Jp86519efhGSSvpWhrQlTM93uCupKUY5vVau6
+tZRGrox/2KJQJWVggEbbMwSubLWYdFQl3JPk+ONVFT24bcMKpBLBaYVu32TxU5nh
+SnUgnZUP5NbcA/FZGOhHibJXWpS2qdgXKxdJ5XbLwVaZOjex/2kskZGT4d9Mozd2
+TaGf+G0eHdP67Pv0RR0Tbc/3WeUiJ3IrhvNXuzDtJE3cfVa7o7P4NHmJweDyAmH3
+pvwPuxwXC65B2Xy9J6P9LjrRk5Sxcx0ki69bIImtt2dmefU6xqaWM/5TkshGsRGR
+xpl/j8nWZjEgQRCHLQzWwa80mMpkg/sTV9HB8Dx6jKXB/ZUhoHHBk2dxEuqPiApp
+GWSZI1b7rCoucL5mxAyE7+WL85MB+GqQk2dLsmijtWKP6T+MejteD+eMuMZ87zf9
+dOLITzNy4ZQ5bb0Sr74MTnB8G2+NszKTc0QWbej09+CVgI+WXTik9KveCjCHk9hN
+AHFiRSdLOkKEW39lt2c0Ui2cFmuqqNh7o0JMcccMyj6D5KbvtwEwXlGjefVwaaZB
+RA+GsCyRxj3qrg+E
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIICOjCCAcGgAwIBAgIQQvLM2htpN0RfFf51KBC49DAKBggqhkjOPQQDAzBfMQsw
+CQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1T
+ZWN0aWdvIFB1YmxpYyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBFNDYwHhcN
+MjEwMzIyMDAwMDAwWhcNNDYwMzIxMjM1OTU5WjBfMQswCQYDVQQGEwJHQjEYMBYG
+A1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1TZWN0aWdvIFB1YmxpYyBT
+ZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBFNDYwdjAQBgcqhkjOPQIBBgUrgQQA
+IgNiAAR2+pmpbiDt+dd34wc7qNs9Xzjoq1WmVk/WSOrsfy2qw7LFeeyZYX8QeccC
+WvkEN/U0NSt3zn8gj1KjAIns1aeibVvjS5KToID1AZTc8GgHHs3u/iVStSBDHBv+
+6xnOQ6OjQjBAMB0GA1UdDgQWBBTRItpMWfFLXyY4qp3W7usNw/upYTAOBgNVHQ8B
+Af8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAwNnADBkAjAn7qRa
+qCG76UeXlImldCBteU/IvZNeWBj7LRoAasm4PdCkT0RHlAFWovgzJQxC36oCMB3q
+4S6ILuH5px0CMk7yn2xVdOOurvulGu7t0vzCAxHrRVxgED1cf5kDW21USAGKcw==
+-----END CERTIFICATE-----
+-----BEGIN CERTIFICATE-----
+MIIFijCCA3KgAwIBAgIQdY39i658BwD6qSWn4cetFDANBgkqhkiG9w0BAQwFADBf
+MQswCQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQD
+Ey1TZWN0aWdvIFB1YmxpYyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBSNDYw
+HhcNMjEwMzIyMDAwMDAwWhcNNDYwMzIxMjM1OTU5WjBfMQswCQYDVQQGEwJHQjEY
+MBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1TZWN0aWdvIFB1Ymxp
+YyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBSNDYwggIiMA0GCSqGSIb3DQEB
+AQUAA4ICDwAwggIKAoICAQCTvtU2UnXYASOgHEdCSe5jtrch/cSV1UgrJnwUUxDa
+ef0rty2k1Cz66jLdScK5vQ9IPXtamFSvnl0xdE8H/FAh3aTPaE8bEmNtJZlMKpnz
+SDBh+oF8HqcIStw+KxwfGExxqjWMrfhu6DtK2eWUAtaJhBOqbchPM8xQljeSM9xf
+iOefVNlI8JhD1mb9nxc4Q8UBUQvX4yMPFF1bFOdLvt30yNoDN9HWOaEhUTCDsG3X
+ME6WW5HwcCSrv0WBZEMNvSE6Lzzpng3LILVCJ8zab5vuZDCQOc2TZYEhMbUjUDM3
+IuM47fgxMMxF/mL50V0yeUKH32rMVhlATc6qu/m1dkmU8Sf4kaWD5QazYw6A3OAS
+VYCmO2a0OYctyPDQ0RTp5A1NDvZdV3LFOxxHVp3i1fuBYYzMTYCQNFu31xR13NgE
+SJ/AwSiItOkcyqex8Va3e0lMWeUgFaiEAin6OJRpmkkGj80feRQXEgyDet4fsZfu
++Zd4KKTIRJLpfSYFplhym3kT2BFfrsU4YjRosoYwjviQYZ4ybPUHNs2iTG7sijbt
+8uaZFURww3y8nDnAtOFr94MlI1fZEoDlSfB1D++N6xybVCi0ITz8fAr/73trdf+L
+HaAZBav6+CuBQug4urv7qv094PPK306Xlynt8xhW6aWWrL3DkJiy4Pmi1KZHQ3xt
+zwIDAQABo0IwQDAdBgNVHQ4EFgQUVnNYZJX5khqwEioEYnmhQBWIIUkwDgYDVR0P
+AQH/BAQDAgGGMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEMBQADggIBAC9c
+mTz8Bl6MlC5w6tIyMY208FHVvArzZJ8HXtXBc2hkeqK5Duj5XYUtqDdFqij0lgVQ
+YKlJfp/imTYpE0RHap1VIDzYm/EDMrraQKFz6oOht0SmDpkBm+S8f74TlH7Kph52
+gDY9hAaLMyZlbcp+nv4fjFg4exqDsQ+8FxG75gbMY/qB8oFM2gsQa6H61SilzwZA
+Fv97fRheORKkU55+MkIQpiGRqRxOF3yEvJ+M0ejf5lG5Nkc/kLnHvALcWxxPDkjB
+JYOcCj+esQMzEhonrPcibCTRAUH4WAP+JWgiH5paPHxsnnVI84HxZmduTILA7rpX
+DhjvLpr3Etiga+kFpaHpaPi8TD8SHkXoUsCjvxInebnMMTzD9joiFgOgyY9mpFui
+TdaBJQbpdqQACj7LzTWb4OE4y2BThihCQRxEV+ioratF4yUQvNs+ZUH7G6aXD+u5
+dHn5HrwdVw1Hr8Mvn4dGp+smWg9WY7ViYG4A++MnESLn/pmPNPW56MORcr3Ywx65
+LvKRRFHQV80MNNVIIb/bE/FmJUNS0nAiNs2fxBx1IK1jcmMGDw4nztJqDby1ORrp
+0XZ60Vzk50lJLVU3aPAaOpg+VBeHVOmmJ1CJeyAvP/+/oYtKR5j/K3tJPsMpRmAY
+QqszKbrAKbkTidOIijlBO8n9pu0f9GBj39ItVQGL
+-----END CERTIFICATE-----
+)OTACA";
+
+String latestStableVersion, latestStableUrl, latestStableSha256, otaLastError;
+size_t latestStableSize = 0;
 bool stableUpdateAvailable = false, otaInstallRequested = false, otaInstalling = false;
+bool otaTimeSyncRequested = false, updateNoticeShown = false;
 unsigned long lastStableCheck = 0, updateNoticeUntil = 0;
-bool updateNoticeShown = false;
+
+bool parseStableVersion(String version, int (&parts)[3]) {
+  if (!version.startsWith("v")) return false;
+  version.remove(0, 1);
+  for (int i = 0; i < 3; ++i) {
+    int dot = version.indexOf('.');
+    if ((i < 2 && dot < 0) || (i == 2 && dot >= 0)) return false;
+    String part = dot < 0 ? version : version.substring(0, dot);
+    if (part.isEmpty() || part.length() > 8) return false;
+    for (unsigned j = 0; j < part.length(); ++j)
+      if (!isDigit(part[j])) return false;
+    parts[i] = part.toInt();
+    if (dot >= 0) version.remove(0, dot + 1);
+  }
+  return true;
+}
 
 int compareStableVersion(const String& a, const String& b) {
-  int av[3] = {0,0,0}, bv[3] = {0,0,0};
-  String sa = a.startsWith("v") ? a.substring(1) : a;
-  String sb = b.startsWith("v") ? b.substring(1) : b;
-  for (int i=0; i<3; ++i) {
-    int da=sa.indexOf('.'), db=sb.indexOf('.');
-    String pa=da<0?sa:sa.substring(0,da), pb=db<0?sb:sb.substring(0,db);
-    if (pa.isEmpty() || pb.isEmpty()) return 0;
-    for (unsigned j=0;j<pa.length();++j) if (!isDigit(pa[j])) return 0;
-    for (unsigned j=0;j<pb.length();++j) if (!isDigit(pb[j])) return 0;
-    av[i]=pa.toInt(); bv[i]=pb.toInt();
-    sa=da<0?"":sa.substring(da+1); sb=db<0?"":sb.substring(db+1);
-  }
-  for (int i=0;i<3;++i) if (av[i]!=bv[i]) return av[i]>bv[i]?1:-1;
+  int av[3], bv[3];
+  if (!parseStableVersion(a, av) || !parseStableVersion(b, bv)) return 0;
+  for (int i = 0; i < 3; ++i)
+    if (av[i] != bv[i]) return av[i] > bv[i] ? 1 : -1;
   return 0;
 }
 
+bool validGitHubAssetDigest(const String& digest) {
+  if (!digest.startsWith("sha256:") || digest.length() != 71) return false;
+  for (unsigned i = 7; i < digest.length(); ++i)
+    if (!isxdigit(static_cast<unsigned char>(digest[i]))) return false;
+  return true;
+}
+
 void checkStableRelease() {
-  if (WiFi.status()!=WL_CONNECTED || otaInstalling) return;
-  lastStableCheck=millis();
-  WiFiClientSecure tls;
-  // GitHub HTTPS transport. Certificate pinning can be added in a future release.
-  tls.setInsecure();
-  HTTPClient http;
-  http.setTimeout(8500);
-  if (!http.begin(tls,"https://api.github.com/repos/Robonavigators/Desk-Companion/releases/latest")) return;
-  http.addHeader("Accept","application/vnd.github+json");
-  http.addHeader("User-Agent","Desk-Companion-OTA");
-  if (http.GET()==HTTP_CODE_OK) {
-    JsonDocument doc;
-    DeserializationError error=deserializeJson(doc,http.getStream());
-    if (!error && !doc["draft"].as<bool>() && !doc["prerelease"].as<bool>()) {
-      String tag=doc["tag_name"].as<String>();
-      String assetUrl;
-      JsonArray assets=doc["assets"].as<JsonArray>();
-      for (JsonObject asset:assets) {
-        if (asset["name"].as<String>()==OTA_ASSET_NAME) {
-          assetUrl=asset["browser_download_url"].as<String>();
-          break;
-        }
-      }
-      // Only official GitHub release downloads are accepted.
-      if (tag.length() && assetUrl.startsWith("https://github.com/Robonavigators/Desk-Companion/releases/download/") &&
-          compareStableVersion(tag,DESK_FIRMWARE_VERSION)>0) {
-        latestStableVersion=tag;
-        latestStableUrl=assetUrl;
-        stableUpdateAvailable=true;
-      } else {
-        stableUpdateAvailable=false;
-        latestStableUrl="";
-      }
+  if (WiFi.status() != WL_CONNECTED || otaInstalling || otaInstallRequested) return;
+  if (time(nullptr) < 1700000000) {
+    // X.509 certificates need real UTC; NTPClient alone does not set system time.
+    if (!otaTimeSyncRequested) {
+      configTime(0, 0, "time.google.com", "pool.ntp.org");
+      otaTimeSyncRequested = true;
     }
+    otaLastError = "Waiting for Wi-Fi time synchronization";
+    lastStableCheck = millis() - OTA_CHECK_INTERVAL_MS + 30000UL;
+    return;
+  }
+  lastStableCheck = millis();
+  WiFiClientSecure tls;
+  tls.setCACert(OTA_GITHUB_ROOT_CAS);
+  HTTPClient http;
+  http.setTimeout(12000);
+  if (!http.begin(tls, "https://api.github.com/repos/Robonavigators/Desk-Companion/releases/latest")) {
+    otaLastError = "Could not connect to GitHub";
+    return;
+  }
+  http.addHeader("Accept", "application/vnd.github+json");
+  http.addHeader("User-Agent", "Desk-Companion-OTA");
+  int response = http.GET();
+  if (response == HTTP_CODE_OK) {
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, http.getStream());
+    if (!err && !doc["draft"].as<bool>() && !doc["prerelease"].as<bool>()) {
+      String tag = doc["tag_name"].as<String>();
+      String assetUrl, sha256;
+      size_t assetSize = 0;
+      JsonArray assets = doc["assets"].as<JsonArray>();
+      for (JsonObject asset : assets) {
+        if (asset["name"].as<String>() != OTA_ASSET_NAME ||
+            asset["state"].as<String>() != "uploaded") continue;
+        String url = asset["browser_download_url"].as<String>();
+        String digest = asset["digest"].as<String>();
+        size_t size = asset["size"].as<size_t>();
+        String expectedUrl = "https://github.com/Robonavigators/Desk-Companion/releases/download/" + tag + "/" + OTA_ASSET_NAME;
+        if (url == expectedUrl && validGitHubAssetDigest(digest) && size > 1024 && size < 4000000) {
+          assetUrl = url;
+          sha256 = digest.substring(7);
+          sha256.toLowerCase();
+          assetSize = size;
+        }
+        break;
+      }
+      if (compareStableVersion(tag, DESK_FIRMWARE_VERSION) > 0 && !assetUrl.isEmpty()) {
+        if (tag != latestStableVersion) updateNoticeShown = false;
+        latestStableVersion = tag;
+        latestStableUrl = assetUrl;
+        latestStableSha256 = sha256;
+        latestStableSize = assetSize;
+        stableUpdateAvailable = true;
+      } else {
+        stableUpdateAvailable = false;
+        latestStableVersion = "";
+        latestStableUrl = "";
+        latestStableSha256 = "";
+        latestStableSize = 0;
+        updateNoticeUntil = 0;
+      }
+      otaLastError = "";
+    } else otaLastError = "Invalid GitHub release response";
+  } else if (response == 404) {
+    stableUpdateAvailable = false;
+    otaLastError = ""; // No stable release has been published yet.
+  } else {
+    otaLastError = "GitHub update check failed (HTTP " + String(response) + ")";
   }
   http.end();
 }
 
 void drawStableUpdateNotice() {
   u8g2.clearBuffer();
-  u8g2.drawFrame(0,0,128,64);
-  // Compact monochrome download icon.
-  u8g2.drawLine(64,7,64,22);
-  u8g2.drawLine(59,17,64,22);
-  u8g2.drawLine(69,17,64,22);
-  u8g2.drawHLine(55,26,18);
+  u8g2.drawFrame(0, 0, 128, 64);
+  u8g2.drawLine(64, 7, 64, 22);
+  u8g2.drawLine(59, 17, 64, 22);
+  u8g2.drawLine(69, 17, 64, 22);
+  u8g2.drawHLine(55, 26, 18);
   u8g2.setFont(u8g2_font_6x10_tf);
-  u8g2.drawStr(18,39,"Update Available");
+  u8g2.drawStr(18, 39, "Update Available");
   u8g2.setFont(u8g2_font_5x7_tf);
-  u8g2.drawStr(9,49,"Go to Web Dashboard");
-  u8g2.drawStr(45,58,"to install");
+  u8g2.drawStr(9, 49, "Go to Web Dashboard");
+  u8g2.drawStr(45, 58, "to install");
 }
 
 void drawStableUpdateIcon() {
-  // Quiet static icon, only while the normal screen is already awake.
+  // Static, quiet notification. Never wakes the display.
   u8g2.setDrawColor(0);
-  u8g2.drawBox(115,0,13,14);
+  u8g2.drawBox(115, 0, 13, 14);
   u8g2.setDrawColor(1);
-  u8g2.drawVLine(121,2,6);
-  u8g2.drawLine(118,6,121,9);
-  u8g2.drawLine(124,6,121,9);
-  u8g2.drawHLine(117,11,9);
+  u8g2.drawVLine(121, 2, 6);
+  u8g2.drawLine(118, 6, 121, 9);
+  u8g2.drawLine(124, 6, 121, 9);
+  u8g2.drawHLine(117, 11, 9);
 }
 
 void installStableRelease() {
-  if (!stableUpdateAvailable || latestStableUrl.isEmpty() || WiFi.status()!=WL_CONNECTED) return;
-  otaInstalling=true;
+  if (!stableUpdateAvailable || latestStableUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return;
+  otaInstalling = true;
+  otaLastError = "";
   WiFiClientSecure tls;
-  tls.setInsecure();
+  tls.setCACert(OTA_GITHUB_ROOT_CAS);
   HTTPClient http;
   http.setTimeout(20000);
-  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
-  if (!http.begin(tls,latestStableUrl)) { otaInstalling=false; return; }
-  int code=http.GET();
-  int size=http.getSize();
-  if (code==HTTP_CODE_OK && size>0 && Update.begin((size_t)size,U_FLASH)) {
-    size_t written=Update.writeStream(http.getStream());
-    if (written==(size_t)size && Update.end(true) && Update.isFinished()) {
-      http.end();
-      delay(400);
-      ESP.restart();
-    } else Update.abort();
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  bool completed = false;
+  if (http.begin(tls, latestStableUrl)) {
+    int response = http.GET();
+    int size = http.getSize();
+    if (response == HTTP_CODE_OK && size > 0 && static_cast<size_t>(size) == latestStableSize) {
+      if (Update.begin(latestStableSize, U_FLASH)) {
+        mbedtls_sha256_context sha;
+        mbedtls_sha256_init(&sha);
+        if (mbedtls_sha256_starts(&sha, 0) == 0) {
+          WiFiClient& stream = http.getStream();
+          uint8_t buffer[2048];
+          size_t remaining = latestStableSize;
+          unsigned long lastProgress = millis();
+          while (remaining > 0 && WiFi.status() == WL_CONNECTED && millis() - lastProgress < 20000UL) {
+            size_t ready = stream.available();
+            if (ready == 0) { delay(10); continue; }
+            size_t amount = min(remaining, min(ready, sizeof(buffer)));
+            int received = stream.readBytes(buffer, amount);
+            if (received <= 0) { delay(5); continue; }
+            if (Update.write(buffer, received) != static_cast<size_t>(received)) break;
+            mbedtls_sha256_update(&sha, buffer, received);
+            remaining -= received;
+            lastProgress = millis();
+            delay(0); // Feed the watchdog while writing flash.
+          }
+          uint8_t hash[32];
+          if (remaining == 0 && mbedtls_sha256_finish(&sha, hash) == 0) {
+            char actual[65];
+            for (int i = 0; i < 32; ++i) snprintf(actual + i*2, 3, "%02x", hash[i]);
+            actual[64] = 0;
+            if (latestStableSha256 == actual && Update.end(true) && Update.isFinished())
+              completed = true;
+            else otaLastError = "Firmware verification or finalization failed";
+          } else otaLastError = "Firmware download was interrupted";
+        } else otaLastError = "Could not initialize firmware checksum";
+        mbedtls_sha256_free(&sha);
+        if (!completed) Update.abort();
+      } else otaLastError = "Not enough OTA partition space";
+    } else otaLastError = "Firmware download unavailable or size does not match release";
+    http.end();
+  } else otaLastError = "Could not open firmware download";
+  otaInstalling = false;
+  if (completed) {
+    delay(400);
+    ESP.restart();
   }
-  http.end();
-  otaInstalling=false;
-  Serial.println("Stable OTA installation failed; existing firmware retained.");
+  Serial.println("Stable OTA installation failed: " + otaLastError);
 }
-
-
 
 // Time Settings
 WiFiUDP ntpUDP;
@@ -1094,6 +1419,7 @@ void fetchForecast() {
 const char DASHBOARD_HTML[] PROGMEM = R"DBHTML(<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#f7f8f6"><meta name="description" content="Private local control center for Desk-Companion"><title>Desk-Companion — Control Center</title>
 <style>
+[hidden]{display:none!important}
 :root{--bg:#f7f8f6;--card:#fff;--text:#1b2422;--sub:#78817e;--line:#e7eae7;--accent:#176953;--accentLight:#edf6f1;--ink:#26352e;--shadow:0 5px 26px rgba(21,36,29,.035)}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);font:14px/1.5 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;color:var(--text);-webkit-font-smoothing:antialiased}button,input,select{font:inherit}button{cursor:pointer}.icon{display:inline-block;vertical-align:middle;flex:none}.layout{display:flex;min-height:100vh}.sidebar{width:246px;background:#fff;border-right:1px solid var(--line);padding:27px 18px;display:flex;flex-direction:column;gap:34px;position:sticky;top:0;height:100vh}.brand{display:flex;align-items:center;gap:12px;padding:0 9px}.mark{height:40px;width:40px;border-radius:12px;background:#e6f0e9;color:var(--accent);display:grid;place-items:center}.brand-name{font-weight:750;font-size:16px;letter-spacing:-.5px;line-height:1.2}.brand-sub{font-size:10px;letter-spacing:1.15px;color:var(--sub);font-weight:700;margin-top:3px}.navgroup{font-size:10px;font-weight:750;color:#9baba2;letter-spacing:1.4px;margin:0 12px 12px;text-transform:uppercase}.navitem{display:flex;align-items:center;gap:12px;text-decoration:none;color:#68736d;padding:12px 13px;border-radius:10px;margin:3px 0;font-size:13px;font-weight:580}.navitem.active{background:var(--accentLight);color:var(--accent);font-weight:750}.navitem:hover{background:#f5f7f4;color:var(--ink)}.sidebar-bottom{margin-top:auto;padding:14px;border-radius:12px;background:#f7f9f6;border:1px solid var(--line);display:flex;gap:10px;color:var(--sub);font-size:11px;line-height:1.6}.main{flex:1;min-width:0;max-width:1450px;padding:32px clamp(20px,4vw,62px) 55px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:29px}.page-title{font-size:26px;font-weight:760;letter-spacing:-1.1px;margin:0}.lead{font-size:13px;color:var(--sub);margin:5px 0 0}.badge{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid var(--line);border-radius:100px;padding:9px 13px;color:#376f59;font-size:12px;font-weight:700;white-space:nowrap}.pulse{width:7px;height:7px;border-radius:50%;background:#29a26e;box-shadow:0 0 0 3px #dff5e9}.badge.offline{color:#aa5a44}.badge.offline .pulse{background:#bd6b56;box-shadow:0 0 0 3px #f8e8e2}.hero{background:#e9f0e9;min-height:228px;border-radius:18px;display:flex;align-items:center;justify-content:space-between;padding:28px 39px;gap:25px;border:1px solid #e0e9e0;overflow:hidden}.eyebrow{font-size:10px;letter-spacing:1.8px;color:#438068;font-weight:800}.hero h2{font-size:30px;letter-spacing:-1.1px;line-height:1.15;margin:9px 0 8px;font-weight:800}.hero p{color:#6d8075;margin:0;max-width:340px;font-size:13px}.hero-face{width:170px;height:137px;background:#263f35;border:6px solid #547163;border-radius:27px;position:relative;flex:none;box-shadow:0 13px 30px #254a3326;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:22px;transform:rotate(-5deg)}.hero-face:before,.hero-face:after{content:"";height:15px;width:4px;background:#547163;position:absolute;top:-19px;border-radius:4px}.hero-face:before{left:51px;transform:rotate(-24deg)}.hero-face:after{right:50px;transform:rotate(24deg)}.face-eyes{display:flex;gap:36px}.face-eyes span{height:32px;width:23px;border-radius:20px;background:#c7f7d6;box-shadow:0 0 13px #bdfad44a}.face-mouth{height:15px;width:39px;border:0;border-bottom:4px solid #c7f7d6;border-radius:0 0 50% 50%}.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;margin:18px 0 25px}.metric{background:#fff;border:1px solid var(--line);border-radius:14px;padding:17px 20px;display:flex;gap:15px;align-items:center}.metric-icon{width:43px;height:43px;border-radius:12px;background:#f1f5f1;color:var(--accent);display:grid;place-items:center}.metric-label{font-size:11px;color:var(--sub);margin-bottom:2px}.metric-value{font-size:17px;font-weight:770;letter-spacing:-.4px;overflow-wrap:anywhere}.two{display:grid;grid-template-columns:1.12fr 1fr;gap:18px;align-items:start}.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:23px 24px;box-shadow:var(--shadow);min-width:0}.card h3{margin:0;font-weight:760;font-size:16px;letter-spacing:-.3px}.cardhead{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;gap:10px}.cardhead .icon{color:#6b8175}.card-sub{font-size:12px;color:var(--sub);margin:5px 0 20px}.screenBtns{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.screenBtns button{display:flex;gap:11px;align-items:center;text-align:left;border:1px solid var(--line);border-radius:11px;background:#fff;padding:17px 14px;color:#54605a;font-size:12px;font-weight:650;min-height:61px}.screenBtns button.active{background:var(--accentLight);color:var(--accent);border-color:#a8d5ba}.screenBtns button:hover{border-color:#86b69d}.control-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 0;border-bottom:1px solid var(--line)}.control-row span:first-child{color:var(--sub);font-size:12px}.control-row strong{font-size:12px;text-align:right;overflow-wrap:anywhere}label{display:block;color:#5a6960;font-size:12px;font-weight:680;margin-bottom:7px}input,select{display:block;width:100%;border:1px solid #dfe5df;border-radius:9px;background:#fff;color:#27372e;padding:12px 13px;outline:none;min-width:0}input:focus,select:focus{border-color:#5d9c7f;box-shadow:0 0 0 3px #e7f5eb}input::placeholder{color:#a2aaa4}.field{margin:0 0 15px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid #dce4dc;background:#fff;color:#40554a;border-radius:9px;padding:11px 15px;font-size:12px;font-weight:740}.btn:hover{background:#f5f8f5}.btn.primary{background:var(--accent);border-color:var(--accent);color:white}.btn.primary:hover{background:#10523f}.btn.danger{color:#ad554f;border-color:#f0ddda}.btn.danger:hover{background:#fff7f6}.actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:19px}.hint{font-size:11px;color:#8b968e;line-height:1.65;margin:14px 0 0}.section-title{font-size:17px;font-weight:780;letter-spacing:-.4px;margin:28px 0 13px}.config{display:grid;grid-template-columns:1fr 1fr;gap:18px}.config .card{min-width:0}.notice{min-height:20px;font-size:12px;color:var(--accent);margin:18px 0}footer{padding-top:16px;border-top:1px solid var(--line);color:#99a39b;font-size:11px;display:flex;justify-content:space-between;gap:10px}@media(max-width:1080px){.sidebar{width:210px}.main{padding:28px 24px 48px}.hero{padding:26px}.metrics{gap:9px}.metric{padding:15px 12px;gap:10px}}@media(max-width:790px){.sidebar{display:none}.main{padding:24px 18px 44px}.two,.config{grid-template-columns:1fr}.hero{padding:25px}.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}}@media(max-width:530px){.top{align-items:flex-start}.page-title{font-size:23px}.hero{min-height:180px;padding:20px}.hero h2{font-size:25px}.hero p{font-size:12px}.hero-face{width:96px;height:92px;border-width:4px;border-radius:18px;gap:13px}.face-eyes{gap:20px}.face-eyes span{width:13px;height:20px}.face-mouth{width:23px;height:10px;border-bottom-width:3px}.hero-face:before,.hero-face:after{display:none}.metrics{grid-template-columns:1fr;gap:9px}.metric{padding:13px 15px}.card{padding:20px 17px}.form-grid{grid-template-columns:1fr}footer{display:block}}
 .scanhead{display:flex;align-items:center;justify-content:space-between;gap:12px}.scanhead label{margin:0}.scanbtn{padding:9px 13px!important;white-space:nowrap}.scanresults{display:none;margin:12px 0 2px;max-height:245px;overflow:auto;border:1px solid var(--line);background:#fbfcfb;border-radius:12px}.scanresults.visible{display:block}.scanitem{width:100%;border:0;border-bottom:1px solid var(--line);background:transparent;display:flex;align-items:center;justify-content:space-between;gap:14px;text-align:left;padding:12px 14px;color:var(--text);font-size:13px}.scanitem:last-child{border-bottom:0}.scanitem:hover,.scanitem:focus-visible{background:var(--accentLight);outline:0}.scanmeta{font-size:11px;color:var(--sub);white-space:nowrap}.scanhint{padding:13px;color:var(--sub);font-size:12px}
@@ -1262,7 +1588,7 @@ document.addEventListener('keydown',e=>{
   }
 });
 async function request(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data)});const o=await r.json();if(!r.ok)throw Error(o.error||'Request failed');msg(o.message||'Saved!');return o}
-let statusBusy=false;async function status(){if(statusBusy)return;statusBusy=true;const started=performance.now();const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),3000);try{const r=await fetch('/api/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('Not connected');state=await r.json();const up=$('installFirmware');up.hidden=!state.updateAvailable;$('firmwareUpdateText').textContent=state.updateAvailable?'Stable '+state.latestVersion+' available — install when convenient.':(state.firmwareVersion==='v0.0.0'?'Development build — stable update checks enabled.':'Current version '+state.firmwareVersion+' · No newer stable release.');$('conn').textContent='Demo mode';$('connectionBadge').classList.remove('offline');$('wifilabel').textContent=state.wifiConnected?state.ssid:'Offline / AP';$('temperature').textContent=Number.isFinite(state.cpuTempC)?state.cpuTempC.toFixed(1)+'°C':'Unavailable';$('timeZoneStatus').textContent=state.weatherReady?'UTC '+(state.offset>=0?'+':'')+(state.offset/60).toFixed(2)+' h':'Awaiting weather sync';$('uptime').textContent=Math.floor(state.uptime/3600)+'h '+(Math.floor(state.uptime/60)%60)+'m';$('ap').textContent=state.ap;$('ip').textContent=state.ip;$('emo').textContent=emotions[state.emotion]||'—';document.querySelectorAll('#screens button').forEach(b=>b.classList.toggle('active',+b.dataset.screen===state.screen));chosenEmotion=state.manualEmotion?state.emotion:-1;$('emotionCurrent').textContent='Mode: '+(chosenEmotion<0?'Automatic — all 66 emotions':emotions[chosenEmotion]||'Unknown');syncEmotionInterval();if($('emotionPicker').classList.contains('open'))renderEmotions();if(!filled){$('ssid').value=state.savedSSID||'';$('ssid2').value=state.savedSSID2||'';$('city').value=state.city||'';$('state').value=state.state||'';$('country').value=state.country||'';filled=true}}catch(e){$('conn').textContent='Offline';$('connectionBadge').classList.add('offline')}finally{clearTimeout(timeout);statusBusy=false}}
+let statusBusy=false;async function status(){if(statusBusy)return;statusBusy=true;const started=performance.now();const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),3000);try{const r=await fetch('/api/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('Not connected');state=await r.json();const up=$('installFirmware');up.hidden=!state.updateAvailable || state.updateInstalling;up.disabled=!!state.updateInstalling;$('firmwareUpdateText').textContent=state.updateInstalling?'Installing firmware — keep the device powered…':state.updateAvailable?'Stable '+state.latestVersion+' available — install when convenient.':state.updateError?'Update check: '+state.updateError:(state.firmwareVersion==='v0.0.0'?'Development build — stable updates enabled.':'Current version '+state.firmwareVersion+' · No newer stable release.');$('conn').textContent='Demo mode';$('connectionBadge').classList.remove('offline');$('wifilabel').textContent=state.wifiConnected?state.ssid:'Offline / AP';$('temperature').textContent=Number.isFinite(state.cpuTempC)?state.cpuTempC.toFixed(1)+'°C':'Unavailable';$('timeZoneStatus').textContent=state.weatherReady?'UTC '+(state.offset>=0?'+':'')+(state.offset/60).toFixed(2)+' h':'Awaiting weather sync';$('uptime').textContent=Math.floor(state.uptime/3600)+'h '+(Math.floor(state.uptime/60)%60)+'m';$('ap').textContent=state.ap;$('ip').textContent=state.ip;$('emo').textContent=emotions[state.emotion]||'—';document.querySelectorAll('#screens button').forEach(b=>b.classList.toggle('active',+b.dataset.screen===state.screen));chosenEmotion=state.manualEmotion?state.emotion:-1;$('emotionCurrent').textContent='Mode: '+(chosenEmotion<0?'Automatic — all 66 emotions':emotions[chosenEmotion]||'Unknown');syncEmotionInterval();if($('emotionPicker').classList.contains('open'))renderEmotions();if(!filled){$('ssid').value=state.savedSSID||'';$('ssid2').value=state.savedSSID2||'';$('city').value=state.city||'';$('state').value=state.state||'';$('country').value=state.country||'';filled=true}}catch(e){$('conn').textContent='Offline';$('connectionBadge').classList.add('offline')}finally{clearTimeout(timeout);statusBusy=false}}
 async function installFirmwareUpdate(){if(!await confirmAction('Install stable firmware update?','Desk-Companion will download the official release, restart, and briefly disconnect. Keep power connected.','Install update'))return;const b=$('installFirmware');b.disabled=true;try{const r=await fetch('/api/update/install',{method:'POST'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not start update');$('firmwareUpdateText').textContent='Installing update… Keep device powered.';b.hidden=true}catch(e){msg(e.message,true);b.disabled=false}}
 $('installFirmware').addEventListener('click',installFirmwareUpdate);
 async function call(path,data){try{await request(path,data);await status()}catch(e){msg(e.message,true)}}
@@ -1348,7 +1674,8 @@ void setupWebServer() {
     d["firmwareVersion"] = DESK_FIRMWARE_VERSION;
     d["latestVersion"] = latestStableVersion;
     d["updateAvailable"] = stableUpdateAvailable;
-    d["updateInstalling"] = otaInstalling;
+    d["updateInstalling"] = otaInstalling || otaInstallRequested;
+    d["updateError"] = otaLastError;
     d["screen"] = displayState;
     d["emotion"] = (int)currentEmotion;
     d["manualEmotion"] = manualEmotion;
