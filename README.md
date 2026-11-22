@@ -27,6 +27,12 @@ Real photos of the Desk-Companion prototype featuring the Seeed Studio XIAO boar
 |:---:|:---:|:---:|
 | ![Desk-Companion prototype — OLED demonstration, view 1](assets/desk-companion-demo-01.jpeg) | ![Desk-Companion prototype — OLED demonstration, view 2](assets/desk-companion-demo-02.jpeg) | ![Desk-Companion prototype — OLED demonstration, view 3](assets/desk-companion-demo-03.jpeg) |
 
+## Latest development build
+
+The latest locally prepared five-screen build includes **Emotions, Clock, Weather, Forecast, and System Information**. Its emotion selector has 66 expressions, a searchable list with visual previews, and a two-step mobile search interaction: tap to open the list without the keyboard, then tap the Search field to type. The × close button was removed; tapping outside dismisses the selector.
+
+**Release note:** These changes are in the separately prepared development firmware and dashboard files, and are **not yet confirmed to be present in the firmware files committed to this repository or the published web-flash binaries**. The repository firmware and Web Flasher may still have the previous four-screen version. Do not assume the five-screen build has been compiled or tested on hardware.
+
 ## Features
 
 - 66 animated facial emotions
@@ -37,7 +43,7 @@ Real photos of the Desk-Companion prototype featuring the Seeed Studio XIAO boar
 - Deep-sleep functionality
 - Professional responsive web dashboard
 - Responsive local web dashboard controls
-- Searchable emotion controls
+- Searchable emotion controls (mobile keyboard should activate only when the Search field is tapped)
 - Dual Wi-Fi profiles with automatic reconnection
 - Wi-Fi scanning (including nearby-network signal strength)
 - Open Wi-Fi access point and captive portal
@@ -297,12 +303,24 @@ An internet connection is required for online weather updates and initial time s
 
 ## OLED Screens
 
-| Screen | Function |
-|---|---|
-| Emotions | Animated expressions |
-| Clock | Local date and time |
-| Weather | Current weather |
-| Forecast | 3-day forecast |
+| Screen | Function | Availability |
+|---|---|---|
+| Emotions | 66 expressive faces and automatic cycling | Repository firmware and development build |
+| Clock | Local date and time | Repository firmware and development build |
+| Weather | Current conditions | Repository firmware and development build |
+| Forecast | 3-day forecast | Repository firmware and development build |
+| System Information | Wi-Fi signal, device IP, free RAM and uptime | Latest development build; not yet confirmed in repository firmware |
+
+Calendar, Pomodoro, and Stopwatch were considered during development but are **not included** in the current five-screen design.
+
+### Emotion Selector (Latest Development Dashboard)
+
+1. Tap the emotion selector to open the list **without opening the mobile keyboard**.
+2. Tap the **Search** field to focus it and open the keyboard with a single tap.
+3. Select an emotion to apply it without triggering the keyboard.
+4. Tap outside the list to dismiss it. There is no × close button.
+
+The **Automatic** option cycles expressions at a configurable interval (default: 5 seconds). Individual emotions can be selected from the searchable list with previews. Mobile keyboard behaviour still requires on-device validation.
 
 ### Touch Controls
 
@@ -393,7 +411,7 @@ Do not commit Wi-Fi passwords, API keys, or other personal information to the re
 
 Desk-Companion is under active development.
 
-C3 and S3 firmware versions have been prepared. The latest firmware still requires complete compilation and hardware validation.
+C3 and S3 five-screen development firmware and a standalone HTML dashboard have been prepared separately. They have **not yet been merged into the repository firmware or verified on physical hardware**. Compilation, mobile touch behaviour, and web-flasher binaries still require validation.
 
 Web Flash installation depends on compatible compiled binaries and the multi-build manifest being available through the Web Flasher. Availability and physical-hardware testing have not been independently verified.
 
