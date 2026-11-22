@@ -22,7 +22,7 @@ jobs:
 
     steps:
       - name: Check out Desk-Companion
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Arduino CLI
         uses: arduino/setup-arduino-cli@v2
@@ -87,7 +87,7 @@ jobs:
           PY
 
       - name: Upload compiled firmware for inspection
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: desk-companion-merged-firmware
           path: output/*.bin
@@ -104,7 +104,7 @@ jobs:
           fi
 
       - name: Check out Robonavigators Website
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: Robonavigators/Robonavigators-Website
           ref: main
