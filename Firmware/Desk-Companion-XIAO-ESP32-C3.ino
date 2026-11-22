@@ -31,6 +31,58 @@
 #include <esp_mac.h>
 
 
+// --- Generic device configuration; no personal credentials in firmware ---
+#define TTP_PIN 3  // XIAO ESP32-C3 D1 / GPIO3
+WebServer server(80);
+DNSServer captiveDns;
+const uint16_t CAPTIVE_DNS_PORT = 53;
+Preferences prefs;
+String wifiSSID, wifiPassword, wifiSSID2, wifiPassword2, weatherKey, cityLabel = "", locationState = "", locationCountry = "";
+String apSSID, adminSecret; // adminSecret retained only for OTA authentication
+float weatherLat = 0.0f, weatherLon = 0.0f;
+int utcOffsetSeconds = 0;
+bool weatherConfigured = false, otaStarted = false, portalReady = false;
+bool setupRequired = false; // Remains true until Wi-Fi is connected and setup completes
+unsigned long setupConnectedAt = 0;
+const unsigned long SETUP_FINISH_DELAY_MS = 1800; // Allow browser save response to finish
+unsigned long lastWiFiAttempt = 0;
+bool trySecondaryNext = false;
+const unsigned long WIFI_RETRY_MS = 15000;
+const unsigned long WIFI_RECOVERY_DELAY_MS = 30000;
+bool recoveryAPActive = false;
+unsigned long wifiOfflineSince = 0;
+unsigned long recoveryConnectedSince = 0;
+
+// The setup access point is open. Start it only when configuration/recovery is needed.
+void startRecoveryAP() {
+  if (recoveryAPActive) return;
+  WiFi.mode(WIFI_AP_STA);  // Keep the STA interface available for reconnection.
+  WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
+  if (WiFi.softAP(apSSID.c_str())) {
+    captiveDns.start(CAPTIVE_DNS_PORT, "*", WiFi.softAPIP());
+    recoveryAPActive = true;
+    Serial.println("Recovery AP ON: " + apSSID + " at http://192.168.4.1/");
+  } else {
+    Serial.println("Recovery AP failed to start; will retry");
+  }
+}
+
+void stopRecoveryAP() {
+  if (!recoveryAPActive) return;
+  captiveDns.stop();
+  WiFi.softAPdisconnect(true);
+  recoveryAPActive = false;
+  WiFi.mode(WIFI_STA);
+  Serial.println("Recovery AP OFF: station Wi-Fi connected");
+}
+
+const char* SCREEN_NAMES[] = {"Emotions", "Clock", "Weather", "Forecast"};
+bool manualEmotion = false;
+void setupWebServer();
+
+// Hardware Objects
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
 // Stable releases only. Development builds are marked v0.0.0 until a tagged release is compiled.
 #ifndef DESK_FIRMWARE_VERSION
 #define DESK_FIRMWARE_VERSION "v0.0.0"
@@ -154,57 +206,7 @@ void installStableRelease() {
   Serial.println("Stable OTA installation failed; existing firmware retained.");
 }
 
-// --- Generic device configuration; no personal credentials in firmware ---
-#define TTP_PIN 3  // XIAO ESP32-C3 D1 / GPIO3
-WebServer server(80);
-DNSServer captiveDns;
-const uint16_t CAPTIVE_DNS_PORT = 53;
-Preferences prefs;
-String wifiSSID, wifiPassword, wifiSSID2, wifiPassword2, weatherKey, cityLabel = "", locationState = "", locationCountry = "";
-String apSSID, adminSecret; // adminSecret retained only for OTA authentication
-float weatherLat = 0.0f, weatherLon = 0.0f;
-int utcOffsetSeconds = 0;
-bool weatherConfigured = false, otaStarted = false, portalReady = false;
-bool setupRequired = false; // Remains true until Wi-Fi is connected and setup completes
-unsigned long setupConnectedAt = 0;
-const unsigned long SETUP_FINISH_DELAY_MS = 1800; // Allow browser save response to finish
-unsigned long lastWiFiAttempt = 0;
-bool trySecondaryNext = false;
-const unsigned long WIFI_RETRY_MS = 15000;
-const unsigned long WIFI_RECOVERY_DELAY_MS = 30000;
-bool recoveryAPActive = false;
-unsigned long wifiOfflineSince = 0;
-unsigned long recoveryConnectedSince = 0;
 
-// The setup access point is open. Start it only when configuration/recovery is needed.
-void startRecoveryAP() {
-  if (recoveryAPActive) return;
-  WiFi.mode(WIFI_AP_STA);  // Keep the STA interface available for reconnection.
-  WiFi.softAPConfig(IPAddress(192,168,4,1), IPAddress(192,168,4,1), IPAddress(255,255,255,0));
-  if (WiFi.softAP(apSSID.c_str())) {
-    captiveDns.start(CAPTIVE_DNS_PORT, "*", WiFi.softAPIP());
-    recoveryAPActive = true;
-    Serial.println("Recovery AP ON: " + apSSID + " at http://192.168.4.1/");
-  } else {
-    Serial.println("Recovery AP failed to start; will retry");
-  }
-}
-
-void stopRecoveryAP() {
-  if (!recoveryAPActive) return;
-  captiveDns.stop();
-  WiFi.softAPdisconnect(true);
-  recoveryAPActive = false;
-  WiFi.mode(WIFI_STA);
-  Serial.println("Recovery AP OFF: station Wi-Fi connected");
-}
-
-const char* SCREEN_NAMES[] = {"Emotions", "Clock", "Weather", "Forecast"};
-bool manualEmotion = false;
-void setupWebServer();
-
-// Hardware Objects
-U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 // Time Settings
 WiFiUDP ntpUDP;
