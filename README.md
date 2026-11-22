@@ -4,7 +4,6 @@
 [![XIAO ESP32-S3](https://img.shields.io/badge/XIAO-ESP32--S3-3178C6?style=flat-square&logo=espressif&logoColor=white)](Firmware/Desk-Companion-XIAO-ESP32-S3.ino)
 [![Arduino](https://img.shields.io/badge/Framework-Arduino-00979D?style=flat-square&logo=arduino&logoColor=white)](https://www.arduino.cc/)
 [![MIT License](https://img.shields.io/badge/License-MIT-22A06B?style=flat-square)](LICENSE)
-[![Web Flasher](https://img.shields.io/badge/Web_Flasher-Install_Online-9B59B6?style=flat-square&logo=googlechrome&logoColor=white)](https://robonavigators-io.vercel.app/tools/flash/)
 
 ### Your intelligent little desktop companion 🤖
 
