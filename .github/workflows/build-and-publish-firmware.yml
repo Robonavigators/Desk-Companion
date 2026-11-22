@@ -150,10 +150,10 @@ jobs:
           set -euo pipefail
           test -s output/desk-companion-c3-merged.bin
           test -s output/desk-companion-s3-merged.bin
-          gh release create "$RELEASE_TAG" \\
-            output/desk-companion-c3-merged.bin \\
-            output/desk-companion-s3-merged.bin \\
-            --target "$SOURCE_SHA" \\
-            --title "Desk-Companion firmware build ${{ github.run_number }}" \\
-            --notes "Stable automated build from commit $SOURCE_SHA. Both XIAO ESP32-C3 (Minimal SPIFFS) and XIAO ESP32-S3 (default partition) merged flash images compiled and validated. Firmware was published to Robonavigators-Website. Hardware testing is still recommended." \\
+          gh release create "$RELEASE_TAG" \
+            output/desk-companion-c3-merged.bin \
+            output/desk-companion-s3-merged.bin \
+            --target "$SOURCE_SHA" \
+            --title "Desk-Companion firmware build ${{ github.run_number }}" \
+            --notes "Stable automated build from commit $SOURCE_SHA. Both XIAO ESP32-C3 (Minimal SPIFFS) and XIAO ESP32-S3 (default partition) merged flash images compiled and validated. Firmware was published to Robonavigators-Website. Hardware testing is still recommended." \
             --latest
