@@ -31,7 +31,7 @@ Real photos of the Desk-Companion prototype featuring the Seeed Studio XIAO boar
 
 The firmware under `Firmware/` is the **real board-specific firmware** compiled by GitHub Actions and published to the Web Flasher. The standalone browser demo is not used as firmware, and the embedded dashboard makes real device API requests (it does not simulate device responses).
 
-Both XIAO ESP32-C3 and ESP32-S3 firmware builds provide four OLED screens: **Emotions, Clock, Weather, and Forecast**. The emotion picker contains 66 expressions. The firmware includes first-boot Wi-Fi setup, weather, touch controls, the local dashboard, ArduinoOTA, and opt-in stable-release update support. Physical hardware behaviour still requires testing.
+Both XIAO ESP32-C3 and ESP32-S3 firmware builds provide four OLED screens: **Emotions, Clock, Weather, and Forecast**. The emotion picker contains 66 expressions. The firmware includes first-boot Wi-Fi setup, weather, touch controls, the local dashboard, and ArduinoOTA support. Physical hardware behaviour still requires testing.
 
 ## Features
 
@@ -51,7 +51,7 @@ Both XIAO ESP32-C3 and ESP32-S3 firmware builds provide four OLED screens: **Emo
 - ESP32 chip temperature monitoring
 - Connection checks every 4 seconds
 - NVS persistent configuration
-- OTA firmware update support
+- ArduinoOTA updates over the local network (using Arduino IDE or compatible tooling)
 
 No external speaker or amplifier is required.
 
@@ -338,7 +338,7 @@ Use the dashboard's emotion selector to pick a face, or select **Automatic** to 
     Emotions         Navigation       STA / AP
     Clock            Deep Sleep       Captive Portal
     Weather                           WebServer
-    Forecast                          mDNS / OTA
+    Forecast                          mDNS / ArduinoOTA
                         |
                     NVS Storage
                         |
@@ -435,34 +435,11 @@ Built using the Seeed Studio XIAO ESP32 platform, Arduino framework, U8g2, and O
 Made by **Robonavigators**.
 
 
-## Stable firmware updates (OLED + dashboard)
+## Firmware distribution and updates
 
-The XIAO ESP32-C3 and ESP32-S3 check GitHub's latest **stable, published release** after Wi-Fi time synchronization and approximately every six hours. When a newer version has a matching board-specific OTA application image and SHA-256 digest, the awake display shows a quiet update icon. The first touch after detecting a release briefly displays **Update Available / Go to Web Dashboard to install**. It never wakes a sleeping OLED. The local dashboard asks for confirmation and then installs the update; firmware does not update itself without consent.
+Development changes to the production sketches automatically compile both ESP32-C3 and ESP32-S3 firmware through GitHub Actions. Successful builds publish **merged USB installation images** to the Robonavigators Web Flasher. These files are for USB flashing, not in-device GitHub OTA installation.
 
-### Development builds versus stable OTA releases
+The automatic GitHub stable-release checker, OLED update notice, dashboard **Install update** button, and GitHub OTA application-image publication workflow have been removed. Desk-Companion no longer checks GitHub releases or installs updates directly from its dashboard.
 
-Every push that changes the production sketches or development workflow compiles both XIAO variants and, only after successful validation, updates the **merged USB installation images** on the Robonavigators Web Flasher. These are development builds, not GitHub stable releases. Outdated runs are automatically cancelled. The C3 uses Minimal SPIFFS; the S3 uses the default partition layout.
+**ArduinoOTA remains supported** for local-network firmware uploads using developer tools with the correct board configuration and existing device OTA authentication. Alternatively, use the [Robonavigators Web Flasher](https://robonavigators-io.vercel.app/tools/flash/) over USB. The two methods are separate.
 
-A stable OTA release is **deliberate**, not created on every commit:
-
-1. Open **Actions → Publish stable Desk-Companion OTA assets → Run workflow**.
-2. Enter a **new, increasing semantic version**, such as `v1.0.0`. Do not reuse an existing tag.
-3. The workflow embeds that version in both production sketches, compiles both boards, validates the **application** images and SHA-256 checksums, then creates one non-prerelease GitHub Release.
-4. The release contains `desk-companion-c3-ota.bin`, `desk-companion-s3-ota.bin`, and `SHA256SUMS.txt`. GitHub's API asset `digest` fields are also checked against the locally compiled files.
-5. Check [the latest release API](https://api.github.com/repos/Robonavigators/Desk-Companion/releases/latest) for the semantic tag and both uploaded OTA assets before testing the dashboard on real C3 and S3 hardware.
-
-Do **not** upload merged USB images as OTA assets. The USB Web Flasher continues using the separate merged binaries published to the website. The workflow refuses to overwrite an existing release or tag. Stable builds are marked stable only after compilation and validation; physical OTA installation still requires hardware testing.
-
-**Legacy releases:** Older `firmware-build-*` GitHub Releases were incorrectly published as stable with only merged USB images. They remain in the repository until explicitly archived or removed. GitHub's `/releases/latest` endpoint can still return one of those legacy releases until a newer semantic stable release is successfully published. Never install a merged image through the OTA dashboard.
-
-**Troubleshooting:** `Update check: Invalid GitHub release response` can also mean that the ESP32 failed to deserialize the GitHub JSON response; release naming alone does not prove the error is fixed. Check Wi-Fi, HTTPS, memory availability, and device logs. A missing matching OTA asset normally prevents the update from being offered, rather than producing that exact parsing error.
-
-The updater requires valid system time for TLS certificate checks, verifies GitHub HTTPS certificates against a selected root CA set, checks chip-specific filenames and SHA-256 digest, and aborts if transfer, digest, or the alternate OTA slot fails. Keep the device powered during install. A fresh USB installation may be required if its previous partition layout does not offer an OTA slot. The dashboard is intentionally unauthenticated: use trusted home or office networks only. Test the upgrade on each hardware variant before announcing general availability.
-
-### Release management
-
-Development commits to `main` compile the C3 and S3 **merged USB images** and update the Robonavigators Web Flasher. Development builds do not create GitHub Releases, and their firmware version remains `v0.0.0`.
-
-To publish a stable OTA version, open **Actions → Publish stable Desk-Companion OTA assets → Run workflow** and provide a new semantic version such as `v1.0.0`. The workflow rejects existing tags, builds both boards with that version embedded, checks the OTA application binaries and their SHA-256 sums, uploads a **draft** release, verifies GitHub's asset metadata, and publishes it only after those checks pass. Never use merged USB binaries for an in-device OTA update.
-
-A stable release contains `desk-companion-c3-ota.bin`, `desk-companion-s3-ota.bin`, and `SHA256SUMS.txt`. The dashboard checks GitHub's `releases/latest` endpoint; old `firmware-build-*` releases are legacy USB artifacts, **not** OTA releases. Until a valid semantic-version stable release exists, OTA discovery may show an explanatory error. For production rollout, first test downloads, installation, reboot, and retained settings on both physical board types.

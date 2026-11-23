@@ -26,10 +26,6 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 #include <ArduinoOTA.h>
-#include <WiFiClientSecure.h>
-#include <mbedtls/sha256.h>
-#include <time.h>
-#include <Update.h>
 #include <esp_mac.h>
 
 
@@ -84,473 +80,6 @@ void setupWebServer();
 
 // Hardware Objects
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
-
-// Only install newer, published GitHub Releases with a matching application image.
-#ifndef DESK_FIRMWARE_VERSION
-#define DESK_FIRMWARE_VERSION "v0.0.0"
-#endif
-#if CONFIG_IDF_TARGET_ESP32C3
-static const char* OTA_ASSET_NAME = "desk-companion-c3-ota.bin";
-#elif CONFIG_IDF_TARGET_ESP32S3
-static const char* OTA_ASSET_NAME = "desk-companion-s3-ota.bin";
-#else
-#error "Unsupported Desk-Companion OTA target"
-#endif
-static const unsigned long OTA_CHECK_INTERVAL_MS = 21600000UL; // Six hours.
-// Trusted public CA roots for GitHub API and its HTTPS release-asset redirects.
-// Certificates are public trust anchors from Mozilla's CA store (certifi).
-static const char OTA_GITHUB_ROOT_CAS[] PROGMEM = R"OTACA(
------BEGIN CERTIFICATE-----
-MIIDXzCCAkegAwIBAgILBAAAAAABIVhTCKIwDQYJKoZIhvcNAQELBQAwTDEgMB4G
-A1UECxMXR2xvYmFsU2lnbiBSb290IENBIC0gUjMxEzARBgNVBAoTCkdsb2JhbFNp
-Z24xEzARBgNVBAMTCkdsb2JhbFNpZ24wHhcNMDkwMzE4MTAwMDAwWhcNMjkwMzE4
-MTAwMDAwWjBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzETMBEG
-A1UEChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjCCASIwDQYJKoZI
-hvcNAQEBBQADggEPADCCAQoCggEBAMwldpB5BngiFvXAg7aEyiie/QV2EcWtiHL8
-RgJDx7KKnQRfJMsuS+FggkbhUqsMgUdwbN1k0ev1LKMPgj0MK66X17YUhhB5uzsT
-gHeMCOFJ0mpiLx9e+pZo34knlTifBtc+ycsmWQ1z3rDI6SYOgxXG71uL0gRgykmm
-KPZpO/bLyCiR5Z2KYVc3rHQU3HTgOu5yLy6c+9C7v/U9AOEGM+iCK65TpjoWc4zd
-QQ4gOsC0p6Hpsk+QLjJg6VfLuQSSaGjlOCZgdbKfd/+RFO+uIEn8rUAVSNECMWEZ
-XriX7613t2Saer9fwRPvm2L7DWzgVGkWqQPabumDk3F2xmmFghcCAwEAAaNCMEAw
-DgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0OBBYEFI/wS3+o
-LkUkrk1Q+mOai97i3Ru8MA0GCSqGSIb3DQEBCwUAA4IBAQBLQNvAUKr+yAzv95ZU
-RUm7lgAJQayzE4aGKAczymvmdLm6AC2upArT9fHxD4q/c2dKg8dEe3jgr25sbwMp
-jjM5RcOO5LlXbKr8EpbsU8Yt5CRsuZRj+9xTaGdWPoO4zzUhw8lo/s7awlOqzJCK
-6fBdRoyV3XpYKBovHd7NADdBj+1EbddTKJd+82cEHhXXipa0095MJ6RMG3NzdvQX
-mcIfeg7jLQitChws/zyrVQ4PkX4268NXSb7hLi18YIvDQVETI53O9zJrlAGomecs
-Mx86OyXShkDOOyyGeMlhLxS67ttVb9+E7gUJTb0o2HLO02JQZR7rkpeDMdmztcpH
-WD9f
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh
-MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
-d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH
-MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT
-MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j
-b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG
-9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCtSnX/RrohCgiN9RlUyfuI
-2/Ou8jqJkTx65qsGGmvPrC3oXgkkRLpimn7Wo6h+4FR1IAWsULecYxpsMNzaHxmx
-1x7e/dfgy5SDN67sH0NO3Xss0r0upS/kqbitOtSZpLYl6ZtrAGCSYP9PIUkY92eQ
-q2EGnI/yuum06ZIya7XzV+hdG82MHauVBJVJ8zUtluNJbd134/tJS7SsVQepj5Wz
-tCO7TG1F8PapspUwtP1MVYwnSlcUfIKdzXOS0xZKBgyMUNGPHgm+F6HmIcr9g+UQ
-vIOlCsRnKPZzFBQ9RnbDhxSJITRNrw9FDKZJobq7nMWxM4MphQIDAQABo0IwQDAP
-BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQUTiJUIBiV
-5uNu5g/6+rkS7QYXjzkwDQYJKoZIhvcNAQELBQADggEBAGBnKJRvDkhj6zHd6mcY
-1Yl9PMWLSn/pvtsrF9+wX3N3KjITOYFnQoQj8kVnNeyIv/iPsGEMNKSuIEyExtv4
-NeF22d+mQrvHRAiGfzZ0JFrabA0UWTW98kndth/Jsw1HKj2ZL7tcu7XUIOGZX1NG
-Fdtom/DzMNU+MeKNhJ7jitralj41E6Vf8PlwUHBHQRFXGU7Aj64GxJUTFy8bJZ91
-8rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTe
-pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl
-MrY=
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIICPzCCAcWgAwIBAgIQBVVWvPJepDU1w6QP1atFcjAKBggqhkjOPQQDAzBhMQsw
-CQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3d3cu
-ZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBHMzAe
-Fw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVTMRUw
-EwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5jb20x
-IDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEczMHYwEAYHKoZIzj0CAQYF
-K4EEACIDYgAE3afZu4q4C/sLfyHS8L6+c/MzXRq8NOrexpu80JX28MzQC7phW1FG
-fp4tn+6OYwwX7Adw9c+ELkCDnOg/QW07rdOkFFk2eJ0DQ+4QE2xy3q6Ip6FrtUPO
-Z9wj/wMco+I+o0IwQDAPBgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAd
-BgNVHQ4EFgQUs9tIpPmhxdiuNkHMEWNpYim8S8YwCgYIKoZIzj0EAwMDaAAwZQIx
-AK288mw/EkrRLTnDCgmXc/SINoyIJ7vmiI1Qhadj+Z4y3maTD/HMsQmP3Wyr+mt/
-oAIwOWZbwmSNuJ5Q3KjVSaLtx9zRSX8XAbjIho9OjIgrqJqpisXRAL34VOKa5Vt8
-sycX
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIIF3jCCA8agAwIBAgIQAf1tMPyjylGoG7xkDjUDLTANBgkqhkiG9w0BAQwFADCB
-iDELMAkGA1UEBhMCVVMxEzARBgNVBAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0pl
-cnNleSBDaXR5MR4wHAYDVQQKExVUaGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNV
-BAMTJVVTRVJUcnVzdCBSU0EgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkwHhcNMTAw
-MjAxMDAwMDAwWhcNMzgwMTE4MjM1OTU5WjCBiDELMAkGA1UEBhMCVVMxEzARBgNV
-BAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNleSBDaXR5MR4wHAYDVQQKExVU
-aGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMTJVVTRVJUcnVzdCBSU0EgQ2Vy
-dGlmaWNhdGlvbiBBdXRob3JpdHkwggIiMA0GCSqGSIb3DQEBAQUAA4ICDwAwggIK
-AoICAQCAEmUXNg7D2wiz0KxXDXbtzSfTTK1Qg2HiqiBNCS1kCdzOiZ/MPans9s/B
-3PHTsdZ7NygRK0faOca8Ohm0X6a9fZ2jY0K2dvKpOyuR+OJv0OwWIJAJPuLodMkY
-tJHUYmTbf6MG8YgYapAiPLz+E/CHFHv25B+O1ORRxhFnRghRy4YUVD+8M/5+bJz/
-Fp0YvVGONaanZshyZ9shZrHUm3gDwFA66Mzw3LyeTP6vBZY1H1dat//O+T23LLb2
-VN3I5xI6Ta5MirdcmrS3ID3KfyI0rn47aGYBROcBTkZTmzNg95S+UzeQc0PzMsNT
-79uq/nROacdrjGCT3sTHDN/hMq7MkztReJVni+49Vv4M0GkPGw/zJSZrM233bkf6
-c0Plfg6lZrEpfDKEY1WJxA3Bk1QwGROs0303p+tdOmw1XNtB1xLaqUkL39iAigmT
-Yo61Zs8liM2EuLE/pDkP2QKe6xJMlXzzawWpXhaDzLhn4ugTncxbgtNMs+1b/97l
-c6wjOy0AvzVVdAlJ2ElYGn+SNuZRkg7zJn0cTRe8yexDJtC/QV9AqURE9JnnV4ee
-UB9XVKg+/XRjL7FQZQnmWEIuQxpMtPAlR1n6BB6T1CZGSlCBst6+eLf8ZxXhyVeE
-Hg9j1uliutZfVS7qXMYoCAQlObgOK6nyTJccBz8NUvXt7y+CDwIDAQABo0IwQDAd
-BgNVHQ4EFgQUU3m/WqorSs9UgOHYm8Cd8rIDZsswDgYDVR0PAQH/BAQDAgEGMA8G
-A1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEMBQADggIBAFzUfA3P9wF9QZllDHPF
-Up/L+M+ZBn8b2kMVn54CVVeWFPFSPCeHlCjtHzoBN6J2/FNQwISbxmtOuowhT6KO
-VWKR82kV2LyI48SqC/3vqOlLVSoGIG1VeCkZ7l8wXEskEVX/JJpuXior7gtNn3/3
-ATiUFJVDBwn7YKnuHKsSjKCaXqeYalltiz8I+8jRRa8YFWSQEg9zKC7F4iRO/Fjs
-8PRF/iKz6y+O0tlFYQXBl2+odnKPi4w2r78NBc5xjeambx9spnFixdjQg3IM8WcR
-iQycE0xyNN+81XHfqnHd4blsjDwSXWXavVcStkNr/+XeTWYRUc+ZruwXtuhxkYze
-Sf7dNXGiFSeUHM9h4ya7b6NnJSFd5t0dCy5oGzuCr+yDZ4XUmFF0sbmZgIn/f3gZ
-XHlKYC6SQK5MNyosycdiyA5d9zZbyuAlJQG03RoHnHcAP9Dc1ew91Pq7P8yF1m9/
-qS3fuQL39ZeatTXaw2ewh0qpKJ4jjv9cJ2vhsE/zB+4ALtRZh8tSQZXq9EfX7mRB
-VXyNWQKV3WKdwrnuWih0hKWbt5DHDAff9Yk2dDLWKMGwsAvgnEzDHNb842m1R0aB
-L6KCq9NjRHDEjf8tM7qtj3u1cIiuPhnPQCjY/MiQu12ZIvVS5ljFH4gxQ+6IHdfG
-jjxDah2nGN59PRbxYvnKkKj9
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIICjzCCAhWgAwIBAgIQXIuZxVqUxdJxVt7NiYDMJjAKBggqhkjOPQQDAzCBiDEL
-MAkGA1UEBhMCVVMxEzARBgNVBAgTCk5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNl
-eSBDaXR5MR4wHAYDVQQKExVUaGUgVVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMT
-JVVTRVJUcnVzdCBFQ0MgQ2VydGlmaWNhdGlvbiBBdXRob3JpdHkwHhcNMTAwMjAx
-MDAwMDAwWhcNMzgwMTE4MjM1OTU5WjCBiDELMAkGA1UEBhMCVVMxEzARBgNVBAgT
-Ck5ldyBKZXJzZXkxFDASBgNVBAcTC0plcnNleSBDaXR5MR4wHAYDVQQKExVUaGUg
-VVNFUlRSVVNUIE5ldHdvcmsxLjAsBgNVBAMTJVVTRVJUcnVzdCBFQ0MgQ2VydGlm
-aWNhdGlvbiBBdXRob3JpdHkwdjAQBgcqhkjOPQIBBgUrgQQAIgNiAAQarFRaqflo
-I+d61SRvU8Za2EurxtW20eZzca7dnNYMYf3boIkDuAUU7FfO7l0/4iGzzvfUinng
-o4N+LZfQYcTxmdwlkWOrfzCjtHDix6EznPO/LlxTsV+zfTJ/ijTjeXmjQjBAMB0G
-A1UdDgQWBBQ64QmG1M8ZwpZ2dEl23OA1xmNjmjAOBgNVHQ8BAf8EBAMCAQYwDwYD
-VR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAwNoADBlAjA2Z6EWCNzklwBBHU6+4WMB
-zzuqQhFkoJ2UOQIReVx7Hfpkue4WQrO/isIJxOzksU0CMQDpKmFHjFJKS04YcPbW
-RNZu9YO6bVi9JNlWSOrvxKJGgYhqOkbRqZtNyWHa0V1Xahg=
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIIFazCCA1OgAwIBAgIRAIIQz7DSQONZRGPgu2OCiwAwDQYJKoZIhvcNAQELBQAw
-TzELMAkGA1UEBhMCVVMxKTAnBgNVBAoTIEludGVybmV0IFNlY3VyaXR5IFJlc2Vh
-cmNoIEdyb3VwMRUwEwYDVQQDEwxJU1JHIFJvb3QgWDEwHhcNMTUwNjA0MTEwNDM4
-WhcNMzUwNjA0MTEwNDM4WjBPMQswCQYDVQQGEwJVUzEpMCcGA1UEChMgSW50ZXJu
-ZXQgU2VjdXJpdHkgUmVzZWFyY2ggR3JvdXAxFTATBgNVBAMTDElTUkcgUm9vdCBY
-MTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAK3oJHP0FDfzm54rVygc
-h77ct984kIxuPOZXoHj3dcKi/vVqbvYATyjb3miGbESTtrFj/RQSa78f0uoxmyF+
-0TM8ukj13Xnfs7j/EvEhmkvBioZxaUpmZmyPfjxwv60pIgbz5MDmgK7iS4+3mX6U
-A5/TR5d8mUgjU+g4rk8Kb4Mu0UlXjIB0ttov0DiNewNwIRt18jA8+o+u3dpjq+sW
-T8KOEUt+zwvo/7V3LvSye0rgTBIlDHCNAymg4VMk7BPZ7hm/ELNKjD+Jo2FR3qyH
-B5T0Y3HsLuJvW5iB4YlcNHlsdu87kGJ55tukmi8mxdAQ4Q7e2RCOFvu396j3x+UC
-B5iPNgiV5+I3lg02dZ77DnKxHZu8A/lJBdiB3QW0KtZB6awBdpUKD9jf1b0SHzUv
-KBds0pjBqAlkd25HN7rOrFleaJ1/ctaJxQZBKT5ZPt0m9STJEadao0xAH0ahmbWn
-OlFuhjuefXKnEgV4We0+UXgVCwOPjdAvBbI+e0ocS3MFEvzG6uBQE3xDk3SzynTn
-jh8BCNAw1FtxNrQHusEwMFxIt4I7mKZ9YIqioymCzLq9gwQbooMDQaHWBfEbwrbw
-qHyGO0aoSCqI3Haadr8faqU9GY/rOPNk3sgrDQoo//fb4hVC1CLQJ13hef4Y53CI
-rU7m2Ys6xt0nUW7/vGT1M0NPAgMBAAGjQjBAMA4GA1UdDwEB/wQEAwIBBjAPBgNV
-HRMBAf8EBTADAQH/MB0GA1UdDgQWBBR5tFnme7bl5AFzgAiIyBpY9umbbjANBgkq
-hkiG9w0BAQsFAAOCAgEAVR9YqbyyqFDQDLHYGmkgJykIrGF1XIpu+ILlaS/V9lZL
-ubhzEFnTIZd+50xx+7LSYK05qAvqFyFWhfFQDlnrzuBZ6brJFe+GnY+EgPbk6ZGQ
-3BebYhtF8GaV0nxvwuo77x/Py9auJ/GpsMiu/X1+mvoiBOv/2X/qkSsisRcOj/KK
-NFtY2PwByVS5uCbMiogziUwthDyC3+6WVwW6LLv3xLfHTjuCvjHIInNzktHCgKQ5
-ORAzI4JMPJ+GslWYHb4phowim57iaztXOoJwTdwJx4nLCgdNbOhdjsnvzqvHu7Ur
-TkXWStAmzOVyyghqpZXjFaH3pO3JLF+l+/+sKAIuvtd7u+Nxe5AW0wdeRlN8NwdC
-jNPElpzVmbUq4JUagEiuTDkHzsxHpFKVK7q4+63SM1N95R1NbdWhscdCb+ZAJzVc
-oyi3B43njTOQ5yOf+1CceWxG1bQVs5ZufpsMljq4Ui0/1lvh+wjChP4kqKOJ2qxq
-4RgqsahDYVvTH9w7jXbyLeiNdd8XM2w9U/t7y0Ff/9yi0GE44Za4rF2LN9d11TPA
-mRGunUHBcnWEvgJBQl9nJEiU0Zsnvgc/ubhPgXRR4Xq37Z0j4r7g1SgEEzwxA57d
-emyPxgcYxn/eR44/KJ4EBs+lVDR3veyJm+kXQ99b21/+jh5Xos1AnX5iItreGCc=
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
-ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
-b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
-MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
-b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
-ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
-9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
-IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
-VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
-93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
-jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
-AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
-A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
-U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wUs
-N+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90vv
-o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU
-5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy
-rqXRfboQnoZsG4q5WTP468SQvvG5
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIIFqDCCA5CgAwIBAgIQHtOXCV/YtLNHcB6qvn9FszANBgkqhkiG9w0BAQwFADBl
-MQswCQYDVQQGEwJVUzEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMTYw
-NAYDVQQDEy1NaWNyb3NvZnQgUlNBIFJvb3QgQ2VydGlmaWNhdGUgQXV0aG9yaXR5
-IDIwMTcwHhcNMTkxMjE4MjI1MTIyWhcNNDIwNzE4MjMwMDIzWjBlMQswCQYDVQQG
-EwJVUzEeMBwGA1UEChMVTWljcm9zb2Z0IENvcnBvcmF0aW9uMTYwNAYDVQQDEy1N
-aWNyb3NvZnQgUlNBIFJvb3QgQ2VydGlmaWNhdGUgQXV0aG9yaXR5IDIwMTcwggIi
-MA0GCSqGSIb3DQEBAQUAA4ICDwAwggIKAoICAQDKW76UM4wplZEWCpW9R2LBifOZ
-Nt9GkMml7Xhqb0eRaPgnZ1AzHaGm++DlQ6OEAlcBXZxIQIJTELy/xztokLaCLeX0
-ZdDMbRnMlfl7rEqUrQ7eS0MdhweSE5CAg2Q1OQT85elss7YfUJQ4ZVBcF0a5toW1
-HLUX6NZFndiyJrDKxHBKrmCk3bPZ7Pw71VdyvD/IybLeS2v4I2wDwAW9lcfNcztm
-gGTjGqwu+UcF8ga2m3P1eDNbx6H7JyqhtJqRjJHTOoI+dkC0zVJhUXAoP8XFWvLJ
-jEm7FFtNyP9nTUwSlq31/niol4fX/V4ggNyhSyL71Imtus5Hl0dVe49FyGcohJUc
-aDDv70ngNXtk55iwlNpNhTs+VcQor1fznhPbRiefHqJeRIOkpcrVE7NLP8TjwuaG
-YaRSMLl6IE9vDzhTyzMMEyuP1pq9KsgtsRx9S1HKR9FIJ3Jdh+vVReZIZZ2vUpC6
-W6IYZVcSn2i51BVrlMRpIpj0M+Dt+VGOQVDJNE92kKz8OMHY4Xu54+OU4UZpyw4K
-UGsTuqwPN1q3ErWQgR5WrlcihtnJ0tHXUeOrO8ZV/R4O03QK0dqq6mm4lyiPSMQH
-+FJDOvTKVTUssKZqwJz58oHhEmrARdlns87/I6KJClTUFLkqqNfs+avNJVgyeY+Q
-W5g5xAgGwax/Dj0ApQIDAQABo1QwUjAOBgNVHQ8BAf8EBAMCAYYwDwYDVR0TAQH/
-BAUwAwEB/zAdBgNVHQ4EFgQUCctZf4aycI8awznjwNnpv7tNsiMwEAYJKwYBBAGC
-NxUBBAMCAQAwDQYJKoZIhvcNAQEMBQADggIBAKyvPl3CEZaJjqPnktaXFbgToqZC
-LgLNFgVZJ8og6Lq46BrsTaiXVq5lQ7GPAJtSzVXNUzltYkyLDVt8LkS/gxCP81OC
-gMNPOsduET/m4xaRhPtthH80dK2Jp86519efhGSSvpWhrQlTM93uCupKUY5vVau6
-tZRGrox/2KJQJWVggEbbMwSubLWYdFQl3JPk+ONVFT24bcMKpBLBaYVu32TxU5nh
-SnUgnZUP5NbcA/FZGOhHibJXWpS2qdgXKxdJ5XbLwVaZOjex/2kskZGT4d9Mozd2
-TaGf+G0eHdP67Pv0RR0Tbc/3WeUiJ3IrhvNXuzDtJE3cfVa7o7P4NHmJweDyAmH3
-pvwPuxwXC65B2Xy9J6P9LjrRk5Sxcx0ki69bIImtt2dmefU6xqaWM/5TkshGsRGR
-xpl/j8nWZjEgQRCHLQzWwa80mMpkg/sTV9HB8Dx6jKXB/ZUhoHHBk2dxEuqPiApp
-GWSZI1b7rCoucL5mxAyE7+WL85MB+GqQk2dLsmijtWKP6T+MejteD+eMuMZ87zf9
-dOLITzNy4ZQ5bb0Sr74MTnB8G2+NszKTc0QWbej09+CVgI+WXTik9KveCjCHk9hN
-AHFiRSdLOkKEW39lt2c0Ui2cFmuqqNh7o0JMcccMyj6D5KbvtwEwXlGjefVwaaZB
-RA+GsCyRxj3qrg+E
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIICOjCCAcGgAwIBAgIQQvLM2htpN0RfFf51KBC49DAKBggqhkjOPQQDAzBfMQsw
-CQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1T
-ZWN0aWdvIFB1YmxpYyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBFNDYwHhcN
-MjEwMzIyMDAwMDAwWhcNNDYwMzIxMjM1OTU5WjBfMQswCQYDVQQGEwJHQjEYMBYG
-A1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1TZWN0aWdvIFB1YmxpYyBT
-ZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBFNDYwdjAQBgcqhkjOPQIBBgUrgQQA
-IgNiAAR2+pmpbiDt+dd34wc7qNs9Xzjoq1WmVk/WSOrsfy2qw7LFeeyZYX8QeccC
-WvkEN/U0NSt3zn8gj1KjAIns1aeibVvjS5KToID1AZTc8GgHHs3u/iVStSBDHBv+
-6xnOQ6OjQjBAMB0GA1UdDgQWBBTRItpMWfFLXyY4qp3W7usNw/upYTAOBgNVHQ8B
-Af8EBAMCAYYwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjOPQQDAwNnADBkAjAn7qRa
-qCG76UeXlImldCBteU/IvZNeWBj7LRoAasm4PdCkT0RHlAFWovgzJQxC36oCMB3q
-4S6ILuH5px0CMk7yn2xVdOOurvulGu7t0vzCAxHrRVxgED1cf5kDW21USAGKcw==
------END CERTIFICATE-----
------BEGIN CERTIFICATE-----
-MIIFijCCA3KgAwIBAgIQdY39i658BwD6qSWn4cetFDANBgkqhkiG9w0BAQwFADBf
-MQswCQYDVQQGEwJHQjEYMBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQD
-Ey1TZWN0aWdvIFB1YmxpYyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBSNDYw
-HhcNMjEwMzIyMDAwMDAwWhcNNDYwMzIxMjM1OTU5WjBfMQswCQYDVQQGEwJHQjEY
-MBYGA1UEChMPU2VjdGlnbyBMaW1pdGVkMTYwNAYDVQQDEy1TZWN0aWdvIFB1Ymxp
-YyBTZXJ2ZXIgQXV0aGVudGljYXRpb24gUm9vdCBSNDYwggIiMA0GCSqGSIb3DQEB
-AQUAA4ICDwAwggIKAoICAQCTvtU2UnXYASOgHEdCSe5jtrch/cSV1UgrJnwUUxDa
-ef0rty2k1Cz66jLdScK5vQ9IPXtamFSvnl0xdE8H/FAh3aTPaE8bEmNtJZlMKpnz
-SDBh+oF8HqcIStw+KxwfGExxqjWMrfhu6DtK2eWUAtaJhBOqbchPM8xQljeSM9xf
-iOefVNlI8JhD1mb9nxc4Q8UBUQvX4yMPFF1bFOdLvt30yNoDN9HWOaEhUTCDsG3X
-ME6WW5HwcCSrv0WBZEMNvSE6Lzzpng3LILVCJ8zab5vuZDCQOc2TZYEhMbUjUDM3
-IuM47fgxMMxF/mL50V0yeUKH32rMVhlATc6qu/m1dkmU8Sf4kaWD5QazYw6A3OAS
-VYCmO2a0OYctyPDQ0RTp5A1NDvZdV3LFOxxHVp3i1fuBYYzMTYCQNFu31xR13NgE
-SJ/AwSiItOkcyqex8Va3e0lMWeUgFaiEAin6OJRpmkkGj80feRQXEgyDet4fsZfu
-+Zd4KKTIRJLpfSYFplhym3kT2BFfrsU4YjRosoYwjviQYZ4ybPUHNs2iTG7sijbt
-8uaZFURww3y8nDnAtOFr94MlI1fZEoDlSfB1D++N6xybVCi0ITz8fAr/73trdf+L
-HaAZBav6+CuBQug4urv7qv094PPK306Xlynt8xhW6aWWrL3DkJiy4Pmi1KZHQ3xt
-zwIDAQABo0IwQDAdBgNVHQ4EFgQUVnNYZJX5khqwEioEYnmhQBWIIUkwDgYDVR0P
-AQH/BAQDAgGGMA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZIhvcNAQEMBQADggIBAC9c
-mTz8Bl6MlC5w6tIyMY208FHVvArzZJ8HXtXBc2hkeqK5Duj5XYUtqDdFqij0lgVQ
-YKlJfp/imTYpE0RHap1VIDzYm/EDMrraQKFz6oOht0SmDpkBm+S8f74TlH7Kph52
-gDY9hAaLMyZlbcp+nv4fjFg4exqDsQ+8FxG75gbMY/qB8oFM2gsQa6H61SilzwZA
-Fv97fRheORKkU55+MkIQpiGRqRxOF3yEvJ+M0ejf5lG5Nkc/kLnHvALcWxxPDkjB
-JYOcCj+esQMzEhonrPcibCTRAUH4WAP+JWgiH5paPHxsnnVI84HxZmduTILA7rpX
-DhjvLpr3Etiga+kFpaHpaPi8TD8SHkXoUsCjvxInebnMMTzD9joiFgOgyY9mpFui
-TdaBJQbpdqQACj7LzTWb4OE4y2BThihCQRxEV+ioratF4yUQvNs+ZUH7G6aXD+u5
-dHn5HrwdVw1Hr8Mvn4dGp+smWg9WY7ViYG4A++MnESLn/pmPNPW56MORcr3Ywx65
-LvKRRFHQV80MNNVIIb/bE/FmJUNS0nAiNs2fxBx1IK1jcmMGDw4nztJqDby1ORrp
-0XZ60Vzk50lJLVU3aPAaOpg+VBeHVOmmJ1CJeyAvP/+/oYtKR5j/K3tJPsMpRmAY
-QqszKbrAKbkTidOIijlBO8n9pu0f9GBj39ItVQGL
------END CERTIFICATE-----
-)OTACA";
-
-String latestStableVersion, latestStableUrl, latestStableSha256, otaLastError;
-size_t latestStableSize = 0;
-bool stableUpdateAvailable = false, otaInstallRequested = false, otaInstalling = false;
-bool otaTimeSyncRequested = false, updateNoticeShown = false;
-unsigned long lastStableCheck = 0, updateNoticeUntil = 0;
-
-bool parseStableVersion(String version, int (&parts)[3]) {
-  if (!version.startsWith("v")) return false;
-  version.remove(0, 1);
-  for (int i = 0; i < 3; ++i) {
-    int dot = version.indexOf('.');
-    if ((i < 2 && dot < 0) || (i == 2 && dot >= 0)) return false;
-    String part = dot < 0 ? version : version.substring(0, dot);
-    if (part.isEmpty() || part.length() > 8) return false;
-    for (unsigned j = 0; j < part.length(); ++j)
-      if (!isDigit(part[j])) return false;
-    parts[i] = part.toInt();
-    if (dot >= 0) version.remove(0, dot + 1);
-  }
-  return true;
-}
-
-int compareStableVersion(const String& a, const String& b) {
-  int av[3], bv[3];
-  if (!parseStableVersion(a, av) || !parseStableVersion(b, bv)) return 0;
-  for (int i = 0; i < 3; ++i)
-    if (av[i] != bv[i]) return av[i] > bv[i] ? 1 : -1;
-  return 0;
-}
-
-bool validGitHubAssetDigest(const String& digest) {
-  if (!digest.startsWith("sha256:") || digest.length() != 71) return false;
-  for (unsigned i = 7; i < digest.length(); ++i)
-    if (!isxdigit(static_cast<unsigned char>(digest[i]))) return false;
-  return true;
-}
-
-void checkStableRelease() {
-  if (WiFi.status() != WL_CONNECTED || otaInstalling || otaInstallRequested) return;
-  if (time(nullptr) < 1700000000) {
-    // X.509 certificates need real UTC; NTPClient alone does not set system time.
-    if (!otaTimeSyncRequested) {
-      configTime(0, 0, "time.google.com", "pool.ntp.org");
-      otaTimeSyncRequested = true;
-    }
-    otaLastError = "Waiting for Wi-Fi time synchronization";
-    lastStableCheck = millis() - OTA_CHECK_INTERVAL_MS + 30000UL;
-    return;
-  }
-  lastStableCheck = millis();
-  WiFiClientSecure tls;
-  tls.setCACert(OTA_GITHUB_ROOT_CAS);
-  HTTPClient http;
-  http.setTimeout(12000);
-  if (!http.begin(tls, "https://api.github.com/repos/Robonavigators/Desk-Companion/releases/latest")) {
-    otaLastError = "Could not connect to GitHub";
-    return;
-  }
-  http.addHeader("Accept", "application/vnd.github+json");
-  http.addHeader("User-Agent", "Desk-Companion-OTA");
-  int response = http.GET();
-  if (response == HTTP_CODE_OK) {
-    // Keep GitHub's large release JSON out of constrained C3/S3 heap.
-    JsonDocument filter;
-    filter["tag_name"] = true;
-    filter["draft"] = true;
-    filter["prerelease"] = true;
-    filter["assets"][0]["name"] = true;
-    filter["assets"][0]["state"] = true;
-    filter["assets"][0]["browser_download_url"] = true;
-    filter["assets"][0]["digest"] = true;
-    filter["assets"][0]["size"] = true;
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
-    if (err) {
-      otaLastError = String("GitHub JSON parsing failed: ") + err.c_str();
-    } else if (!doc["tag_name"].is<String>() || !doc["assets"].is<JsonArray>() ||
-               doc["draft"].as<bool>() || doc["prerelease"].as<bool>()) {
-      otaLastError = "Invalid GitHub release metadata";
-    } else {
-      String tag = doc["tag_name"].as<String>();
-      String assetUrl, sha256;
-      size_t assetSize = 0;
-      JsonArray assets = doc["assets"].as<JsonArray>();
-      for (JsonObject asset : assets) {
-        if (asset["name"].as<String>() != OTA_ASSET_NAME ||
-            asset["state"].as<String>() != "uploaded") continue;
-        String url = asset["browser_download_url"].as<String>();
-        String digest = asset["digest"].as<String>();
-        size_t size = asset["size"].as<size_t>();
-        String expectedUrl = "https://github.com/Robonavigators/Desk-Companion/releases/download/" + tag + "/" + OTA_ASSET_NAME;
-        if (url == expectedUrl && validGitHubAssetDigest(digest) && size > 1024 && size < 4000000) {
-          assetUrl = url;
-          sha256 = digest.substring(7);
-          sha256.toLowerCase();
-          assetSize = size;
-        }
-        break;
-      }
-      int versionParts[3];
-      if (parseStableVersion(tag, versionParts) && compareStableVersion(tag, DESK_FIRMWARE_VERSION) > 0 && !assetUrl.isEmpty()) {
-        if (tag != latestStableVersion) updateNoticeShown = false;
-        latestStableVersion = tag;
-        latestStableUrl = assetUrl;
-        latestStableSha256 = sha256;
-        latestStableSize = assetSize;
-        stableUpdateAvailable = true;
-      } else {
-        stableUpdateAvailable = false;
-        latestStableVersion = "";
-        latestStableUrl = "";
-        latestStableSha256 = "";
-        latestStableSize = 0;
-        updateNoticeUntil = 0;
-      }
-      otaLastError = "";
-      if (!parseStableVersion(tag, versionParts)) otaLastError = "Latest release is not a semantic version";
-      else if (compareStableVersion(tag, DESK_FIRMWARE_VERSION) > 0 && assetUrl.isEmpty())
-        otaLastError = "Stable release missing valid board OTA image or SHA-256 digest";
-    }
-  } else if (response == 404) {
-    stableUpdateAvailable = false;
-    otaLastError = ""; // No stable release has been published yet.
-  } else {
-    otaLastError = "GitHub update check failed (HTTP " + String(response) + ")";
-  }
-  http.end();
-}
-
-void drawStableUpdateNotice() {
-  u8g2.clearBuffer();
-  u8g2.drawFrame(0, 0, 128, 64);
-  u8g2.drawLine(64, 7, 64, 22);
-  u8g2.drawLine(59, 17, 64, 22);
-  u8g2.drawLine(69, 17, 64, 22);
-  u8g2.drawHLine(55, 26, 18);
-  u8g2.setFont(u8g2_font_6x10_tf);
-  u8g2.drawStr(18, 39, "Update Available");
-  u8g2.setFont(u8g2_font_5x7_tf);
-  u8g2.drawStr(9, 49, "Go to Web Dashboard");
-  u8g2.drawStr(45, 58, "to install");
-}
-
-void drawStableUpdateIcon() {
-  // Static, quiet notification. Never wakes the display.
-  u8g2.setDrawColor(0);
-  u8g2.drawBox(115, 0, 13, 14);
-  u8g2.setDrawColor(1);
-  u8g2.drawVLine(121, 2, 6);
-  u8g2.drawLine(118, 6, 121, 9);
-  u8g2.drawLine(124, 6, 121, 9);
-  u8g2.drawHLine(117, 11, 9);
-}
-
-void installStableRelease() {
-  if (!stableUpdateAvailable || latestStableUrl.isEmpty() || WiFi.status() != WL_CONNECTED) return;
-  otaInstalling = true;
-  otaLastError = "";
-  WiFiClientSecure tls;
-  tls.setCACert(OTA_GITHUB_ROOT_CAS);
-  HTTPClient http;
-  http.setTimeout(20000);
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  bool completed = false;
-  if (http.begin(tls, latestStableUrl)) {
-    int response = http.GET();
-    int size = http.getSize();
-    if (response == HTTP_CODE_OK && size > 0 && static_cast<size_t>(size) == latestStableSize) {
-      if (Update.begin(latestStableSize, U_FLASH)) {
-        mbedtls_sha256_context sha;
-        mbedtls_sha256_init(&sha);
-        if (mbedtls_sha256_starts(&sha, 0) == 0) {
-          WiFiClient& stream = http.getStream();
-          uint8_t buffer[2048];
-          size_t remaining = latestStableSize;
-          unsigned long lastProgress = millis();
-          while (remaining > 0 && WiFi.status() == WL_CONNECTED && millis() - lastProgress < 20000UL) {
-            size_t ready = stream.available();
-            if (ready == 0) { delay(10); continue; }
-            size_t amount = min(remaining, min(ready, sizeof(buffer)));
-            int received = stream.readBytes(buffer, amount);
-            if (received <= 0) { delay(5); continue; }
-            if (Update.write(buffer, received) != static_cast<size_t>(received)) break;
-            mbedtls_sha256_update(&sha, buffer, received);
-            remaining -= received;
-            lastProgress = millis();
-            delay(0); // Feed the watchdog while writing flash.
-          }
-          uint8_t hash[32];
-          if (remaining == 0 && mbedtls_sha256_finish(&sha, hash) == 0) {
-            char actual[65];
-            for (int i = 0; i < 32; ++i) snprintf(actual + i*2, 3, "%02x", hash[i]);
-            actual[64] = 0;
-            if (latestStableSha256 == actual && Update.end(true) && Update.isFinished())
-              completed = true;
-            else otaLastError = "Firmware verification or finalization failed";
-          } else otaLastError = "Firmware download was interrupted";
-        } else otaLastError = "Could not initialize firmware checksum";
-        mbedtls_sha256_free(&sha);
-        if (!completed) Update.abort();
-      } else otaLastError = "Not enough OTA partition space";
-    } else otaLastError = "Firmware download unavailable or size does not match release";
-    http.end();
-  } else otaLastError = "Could not open firmware download";
-  otaInstalling = false;
-  if (completed) {
-    delay(400);
-    ESP.restart();
-  }
-  Serial.println("Stable OTA installation failed: " + otaLastError);
-}
 
 // Time Settings
 WiFiUDP ntpUDP;
@@ -1009,7 +538,6 @@ void setup() {
 
 void loop() {
   if (recoveryAPActive) captiveDns.processNextRequest(); // Setup or Wi-Fi recovery.
-  if (otaInstallRequested) { otaInstallRequested=false; installStableRelease(); }
   server.handleClient();
   if (isGoingToSleep) {
     if (millis() - sleepTimer >= 4000) {
@@ -1107,7 +635,6 @@ void loop() {
 
   handleTouch();
   if (isGoingToSleep) return;
-  if (WiFi.status()==WL_CONNECTED && !otaInstalling && (lastStableCheck==0 || millis()-lastStableCheck>=OTA_CHECK_INTERVAL_MS)) checkStableRelease();
   if (WiFi.status() == WL_CONNECTED && weatherConfigured &&
       (millis() - lastWeatherUpdate > 900000 || lastWeatherUpdate == 0)) {
     fetchWeather(); fetchForecast(); lastWeatherUpdate = millis();
@@ -1145,10 +672,6 @@ void loop() {
     } else if (displayState == 1) drawTimeScreen(ptm);
     else if (displayState == 2) drawCurrentWeather();
     else if (displayState == 3) drawForecastScreen();
-    if (stableUpdateAvailable) {
-      if (updateNoticeUntil && (long)(updateNoticeUntil-millis())>0) drawStableUpdateNotice();
-      else drawStableUpdateIcon();
-    }
     u8g2.sendBuffer();
   }
 }
@@ -1160,7 +683,6 @@ void handleTouch() {
 
   if (touched && !isPressing) {
     isPressing = true;
-    if (stableUpdateAvailable && !updateNoticeShown) { updateNoticeUntil=now+3000; updateNoticeShown=true; }
     btnPressTime = now;
     longPressHandled = false;
   }
@@ -1462,7 +984,6 @@ const char DASHBOARD_HTML[] PROGMEM = R"DBHTML(<!DOCTYPE html>
 #emotionIntervalPanel[hidden]{display:none!important}</style></head><body><div class="layout">
 <aside class="sidebar"><div class="brand"><div class="mark"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l4 4v10l-4 4H8l-4-4V7z"/><path d="M9 10h.01M15 10h.01" stroke-width="3"/><path d="M8.5 15c2.2 2 4.8 2 7 0"/></svg></div><div><div class="brand-name">Desk-Companion</div><div class="brand-sub">CONTROL CENTER</div></div></div><nav aria-label="Main navigation"><div class="navgroup">Workspace</div><a class="navitem active" href="#overview"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg> Overview</a><a class="navitem" href="#display"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 22h8M12 18v4"/></svg> Display controls</a><a class="navitem" href="#device"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9zM9 1v4M15 1v4M9 19v4M15 19v4M1 9h4M1 15h4M19 9h4M19 15h4"/></svg> Device status</a><div class="navgroup" style="margin-top:29px">Configuration</div><a class="navitem" href="#network"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg> Wi-Fi network</a><a class="navitem" href="#weather"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a4 4 0 0 1-1-7.9A7 7 0 0 1 18 10a4.5 4.5 0 0 1 0 9H6z"/></svg> Weather & time</a></nav><div class="sidebar-bottom"><svg class="icon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><span>Local-first control.<br>No cloud login required.</span></div></aside>
 <main class="main" id="overview"><div class="top"><div><h1 class="page-title">Overview</h1><p class="lead">Manage your Desk-Companion, all in one place.</p></div><div class="badge offline" id="connectionBadge"><span class="pulse"></span><span id="conn">Connecting</span></div></div>
-<section class="card" id="firmwareUpdate" style="margin-bottom:18px;padding:15px 20px" aria-live="polite"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 17v4h16v-4"/></svg><div style="flex:1"><strong>Firmware updates</strong><div id="firmwareUpdateText" class="hint" style="margin:2px 0 0">Checking stable releases…</div></div><button class="btn primary" id="installFirmware" type="button" hidden>Install update</button></div></section>
 <div class="hero"><div><div class="eyebrow">MEET YOUR COMPANION</div><h2>Hello, human.</h2><p>Your pocket-sized desk companion is ready whenever you are.</p></div><div class="hero-face" role="img" aria-label="Smiling Desk-Companion illustration"><div class="face-eyes"><span></span><span></span></div><div class="face-mouth"></div></div></div>
 <div class="metrics"><div class="metric"><div class="metric-icon"><svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg></div><div><div class="metric-label">Network</div><div class="metric-value" id="wifilabel">—</div></div></div><div class="metric"><div class="metric-icon"><svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3a2 2 0 0 1 4 0v10.5a4 4 0 1 1-4 0V3z"/><path d="M12 9v9"/></svg></div><div><div class="metric-label">ESP32-C3 chip temperature</div><div class="metric-value" id="temperature">—</div></div></div><div class="metric"><div class="metric-icon"><svg class="icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><div><div class="metric-label">Uptime</div><div class="metric-value" id="uptime">—</div></div></div></div>
 <div class="two"><section class="card" id="display"><div class="cardhead"><h3>Display controls</h3><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 22h8M12 18v4"/></svg></div><p class="card-sub">Choose what appears on the OLED display.</p><div class="screenBtns" id="screens"><button data-screen="0"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M8 14c2 3 6 3 8 0M9 9h.01M15 9h.01" stroke-width="2.2"/></svg> Emotions</button><button data-screen="1"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg> Clock</button><button data-screen="2"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 19a4 4 0 0 1-1-7.9A7 7 0 0 1 18 10a4.5 4.5 0 0 1 0 9H6z"/></svg> Weather</button><button data-screen="3"><svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4M17 3v4M3 10h18"/></svg> Forecast</button></div><div class="field" style="margin-top:22px"><label for="emotion">Emotion mode</label><div class="emotion-picker" id="emotionPicker">
@@ -1606,9 +1127,7 @@ document.addEventListener('keydown',e=>{
   }
 });
 async function request(path,data){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data)});const o=await r.json();if(!r.ok)throw Error(o.error||'Request failed');msg(o.message||'Saved!');return o}
-let statusBusy=false;async function status(){if(statusBusy)return;statusBusy=true;const started=performance.now();const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),3000);try{const r=await fetch('/api/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('Not connected');state=await r.json();const up=$('installFirmware');up.hidden=!state.updateAvailable || state.updateInstalling;up.disabled=!!state.updateInstalling;$('firmwareUpdateText').textContent=state.updateInstalling?'Installing firmware — keep the device powered…':state.updateAvailable?'Stable '+state.latestVersion+' available — install when convenient.':state.updateError?'Update check: '+state.updateError:(state.firmwareVersion==='v0.0.0'?'Development build — stable updates enabled.':'Current version '+state.firmwareVersion+' · No newer stable release.');$('conn').textContent=state.wifiConnected?'Connected':'Access point';$('connectionBadge').classList.remove('offline');$('wifilabel').textContent=state.wifiConnected?state.ssid:'Offline / AP';$('temperature').textContent=Number.isFinite(state.cpuTempC)?state.cpuTempC.toFixed(1)+'°C':'Unavailable';$('timeZoneStatus').textContent=state.weatherReady?'UTC '+(state.offset>=0?'+':'')+(state.offset/60).toFixed(2)+' h':'Awaiting weather sync';$('uptime').textContent=Math.floor(state.uptime/3600)+'h '+(Math.floor(state.uptime/60)%60)+'m';$('ap').textContent=state.ap;$('ip').textContent=state.ip;$('emo').textContent=emotions[state.emotion]||'—';document.querySelectorAll('#screens button').forEach(b=>b.classList.toggle('active',+b.dataset.screen===state.screen));chosenEmotion=state.manualEmotion?state.emotion:-1;$('emotionCurrent').textContent='Mode: '+(chosenEmotion<0?'Automatic — all 66 emotions':emotions[chosenEmotion]||'Unknown');syncEmotionInterval();if($('emotionPicker').classList.contains('open'))renderEmotions();if(!filled){$('ssid').value=state.savedSSID||'';$('ssid2').value=state.savedSSID2||'';$('city').value=state.city||'';$('state').value=state.state||'';$('country').value=state.country||'';filled=true}}catch(e){$('conn').textContent='Offline';$('connectionBadge').classList.add('offline')}finally{clearTimeout(timeout);statusBusy=false}}
-async function installFirmwareUpdate(){if(!await confirmAction('Install stable firmware update?','Desk-Companion will download the official release, restart, and briefly disconnect. Keep power connected.','Install update'))return;const b=$('installFirmware');b.disabled=true;try{const r=await fetch('/api/update/install',{method:'POST'});const d=await r.json();if(!r.ok)throw Error(d.error||'Could not start update');$('firmwareUpdateText').textContent='Installing update… Keep device powered.';b.hidden=true}catch(e){msg(e.message,true);b.disabled=false}}
-$('installFirmware').addEventListener('click',installFirmwareUpdate);
+let statusBusy=false;async function status(){if(statusBusy)return;statusBusy=true;const started=performance.now();const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),3000);try{const r=await fetch('/api/status',{cache:'no-store',signal:controller.signal});if(!r.ok)throw Error('Not connected');state=await r.json();$('conn').textContent=state.wifiConnected?'Connected':'Access point';$('connectionBadge').classList.remove('offline');$('wifilabel').textContent=state.wifiConnected?state.ssid:'Offline / AP';$('temperature').textContent=Number.isFinite(state.cpuTempC)?state.cpuTempC.toFixed(1)+'°C':'Unavailable';$('timeZoneStatus').textContent=state.weatherReady?'UTC '+(state.offset>=0?'+':'')+(state.offset/60).toFixed(2)+' h':'Awaiting weather sync';$('uptime').textContent=Math.floor(state.uptime/3600)+'h '+(Math.floor(state.uptime/60)%60)+'m';$('ap').textContent=state.ap;$('ip').textContent=state.ip;$('emo').textContent=emotions[state.emotion]||'—';document.querySelectorAll('#screens button').forEach(b=>b.classList.toggle('active',+b.dataset.screen===state.screen));chosenEmotion=state.manualEmotion?state.emotion:-1;$('emotionCurrent').textContent='Mode: '+(chosenEmotion<0?'Automatic — all 66 emotions':emotions[chosenEmotion]||'Unknown');syncEmotionInterval();if($('emotionPicker').classList.contains('open'))renderEmotions();if(!filled){$('ssid').value=state.savedSSID||'';$('ssid2').value=state.savedSSID2||'';$('city').value=state.city||'';$('state').value=state.state||'';$('country').value=state.country||'';filled=true}}catch(e){$('conn').textContent='Offline';$('connectionBadge').classList.add('offline')}finally{clearTimeout(timeout);statusBusy=false}}
 async function call(path,data){try{await request(path,data);await status()}catch(e){msg(e.message,true)}}
 document.querySelectorAll('#screens button').forEach(b=>b.addEventListener('click',()=>call('/api/screen',{screen:b.dataset.screen})));$('next').onclick=()=>call('/api/screen',{screen:(state.screen+1)%4});$('refresh').onclick=status;$('sleep').onclick=async()=>{if(await confirmAction('Put Desk-Companion to sleep?','The display and web server will stop until you touch the sensor to wake it.','Sleep now'))await call('/api/sleep',{})};$('reboot').onclick=async()=>{if(await confirmAction('Restart Desk-Companion?','The dashboard will disconnect briefly while your device restarts.','Restart device',true))await call('/api/restart',{})};$('wifiForm').onsubmit=e=>{e.preventDefault();call('/api/wifi',{ssid:$('ssid').value,password:$('password').value})};$('wifiForm2').onsubmit=e=>{e.preventDefault();call('/api/wifi2',{ssid:$('ssid2').value,password:$('password2').value})};$('weatherForm').onsubmit=e=>{e.preventDefault();call('/api/weather',{city:$('city').value,state:$('state').value,country:$('country').value,apiKey:$('apiKey').value})};
 async function scanWiFi(second=false){const btn=$(second?'scanWifi2':'scanWifi'),box=$(second?'scanResults2':'scanResults');btn.disabled=true;btn.textContent='Scanning…';box.classList.add('visible');box.replaceChildren();const note=document.createElement('div');note.className='scanhint';note.textContent='Looking for nearby 2.4 GHz networks…';box.append(note);try{const r=await fetch('/api/wifi/scan',{cache:'no-store'});const data=await r.json();if(!r.ok)throw Error(data.error||'Wi-Fi scan failed');box.replaceChildren();if(!data.networks.length){const n=document.createElement('div');n.className='scanhint';n.textContent='No visible networks found. You can still type an SSID manually.';box.append(n)}else{for(const net of data.networks){const b=document.createElement('button');b.type='button';b.className='scanitem';const name=document.createElement('span');name.textContent=net.ssid;const meta=document.createElement('span');meta.className='scanmeta';meta.textContent=net.rssi+' dBm · '+(net.secure?'Secured':'Open');b.append(name,meta);b.addEventListener('click',()=>{$(second?'ssid2':'ssid').value=net.ssid;box.classList.remove('visible');$(second?'password2':'password').focus()});box.append(b)}}}catch(err){box.replaceChildren();const n=document.createElement('div');n.className='scanhint';n.textContent='Scan unavailable: '+err.message;box.append(n)}finally{btn.disabled=false;btn.innerHTML='<svg class="icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 8.8a16 16 0 0 1 20 0M5 12.5a11 11 0 0 1 14 0M8.5 16a6 6 0 0 1 7 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg> Scan Wi-Fi'}}
@@ -1689,11 +1208,6 @@ void setupWebServer() {
     d["ap"] = apSSID;
     d["ip"] = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
     d["uptime"] = millis() / 1000;
-    d["firmwareVersion"] = DESK_FIRMWARE_VERSION;
-    d["latestVersion"] = latestStableVersion;
-    d["updateAvailable"] = stableUpdateAvailable;
-    d["updateInstalling"] = otaInstalling || otaInstallRequested;
-    d["updateError"] = otaLastError;
     d["screen"] = displayState;
     d["emotion"] = (int)currentEmotion;
     d["manualEmotion"] = manualEmotion;
@@ -1711,19 +1225,6 @@ void setupWebServer() {
     server.send(200, "application/json", out);
   });
   // Scan nearby 2.4 GHz Wi-Fi networks. Never return saved credentials.
-  server.on("/api/update/check", HTTP_POST, []() {
-    if (!authorizeWrite()) return;
-    checkStableRelease();
-    jsonReply(200,stableUpdateAvailable?"Stable update available":"No newer stable release");
-  });
-  server.on("/api/update/install", HTTP_POST, []() {
-    if (!authorizeWrite()) return;
-    if (otaInstalling || otaInstallRequested) return jsonReply(409,"Update already in progress",true);
-    if (!stableUpdateAvailable || latestStableUrl.isEmpty()) return jsonReply(409,"No newer stable release available",true);
-    if (WiFi.status()!=WL_CONNECTED) return jsonReply(503,"Wi-Fi required for update",true);
-    otaInstallRequested=true;
-    jsonReply(200,"Installing stable firmware");
-  });
   server.on("/api/wifi/scan", HTTP_GET, []() {
     // A synchronous scan may briefly pause the dashboard while radio scans.
     int count = WiFi.scanNetworks(false, true);
