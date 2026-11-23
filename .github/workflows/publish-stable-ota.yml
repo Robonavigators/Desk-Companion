@@ -102,7 +102,7 @@ jobs:
               data = image.read_bytes()
               if not 1024 < len(data) < 4000000 or data[0] != 0xE9:
                   raise SystemExit(f'Invalid OTA application image: {image}')
-              if release_tag + b'\\x00' not in data:
+              if release_tag + b'\x00' not in data:
                   raise SystemExit(f'Embedded firmware version does not match release tag: {image}')
               print(f'Validated {image}: {len(data):,} bytes; embedded version matches {release_tag.decode()}')
           PY
