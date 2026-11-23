@@ -458,3 +458,11 @@ Do **not** upload merged USB images as OTA assets. The USB Web Flasher continues
 **Troubleshooting:** `Update check: Invalid GitHub release response` can also mean that the ESP32 failed to deserialize the GitHub JSON response; release naming alone does not prove the error is fixed. Check Wi-Fi, HTTPS, memory availability, and device logs. A missing matching OTA asset normally prevents the update from being offered, rather than producing that exact parsing error.
 
 The updater requires valid system time for TLS certificate checks, verifies GitHub HTTPS certificates against a selected root CA set, checks chip-specific filenames and SHA-256 digest, and aborts if transfer, digest, or the alternate OTA slot fails. Keep the device powered during install. A fresh USB installation may be required if its previous partition layout does not offer an OTA slot. The dashboard is intentionally unauthenticated: use trusted home or office networks only. Test the upgrade on each hardware variant before announcing general availability.
+
+### Release management
+
+Development commits to `main` compile the C3 and S3 **merged USB images** and update the Robonavigators Web Flasher. Development builds do not create GitHub Releases, and their firmware version remains `v0.0.0`.
+
+To publish a stable OTA version, open **Actions → Publish stable Desk-Companion OTA assets → Run workflow** and provide a new semantic version such as `v1.0.0`. The workflow rejects existing tags, builds both boards with that version embedded, checks the OTA application binaries and their SHA-256 sums, uploads a **draft** release, verifies GitHub's asset metadata, and publishes it only after those checks pass. Never use merged USB binaries for an in-device OTA update.
+
+A stable release contains `desk-companion-c3-ota.bin`, `desk-companion-s3-ota.bin`, and `SHA256SUMS.txt`. The dashboard checks GitHub's `releases/latest` endpoint; old `firmware-build-*` releases are legacy USB artifacts, **not** OTA releases. Until a valid semantic-version stable release exists, OTA discovery may show an explanatory error. For production rollout, first test downloads, installation, reboot, and retained settings on both physical board types.

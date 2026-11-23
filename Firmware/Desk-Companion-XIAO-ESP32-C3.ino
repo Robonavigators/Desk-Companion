@@ -402,9 +402,24 @@ void checkStableRelease() {
   http.addHeader("User-Agent", "Desk-Companion-OTA");
   int response = http.GET();
   if (response == HTTP_CODE_OK) {
+    // Keep GitHub's large release JSON out of constrained C3/S3 heap.
+    JsonDocument filter;
+    filter["tag_name"] = true;
+    filter["draft"] = true;
+    filter["prerelease"] = true;
+    filter["assets"][0]["name"] = true;
+    filter["assets"][0]["state"] = true;
+    filter["assets"][0]["browser_download_url"] = true;
+    filter["assets"][0]["digest"] = true;
+    filter["assets"][0]["size"] = true;
     JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, http.getStream());
-    if (!err && !doc["draft"].as<bool>() && !doc["prerelease"].as<bool>()) {
+    DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
+    if (err) {
+      otaLastError = String("GitHub JSON parsing failed: ") + err.c_str();
+    } else if (!doc["tag_name"].is<String>() || !doc["assets"].is<JsonArray>() ||
+               doc["draft"].as<bool>() || doc["prerelease"].as<bool>()) {
+      otaLastError = "Invalid GitHub release metadata";
+    } else {
       String tag = doc["tag_name"].as<String>();
       String assetUrl, sha256;
       size_t assetSize = 0;
@@ -424,7 +439,8 @@ void checkStableRelease() {
         }
         break;
       }
-      if (compareStableVersion(tag, DESK_FIRMWARE_VERSION) > 0 && !assetUrl.isEmpty()) {
+      int versionParts[3];
+      if (parseStableVersion(tag, versionParts) && compareStableVersion(tag, DESK_FIRMWARE_VERSION) > 0 && !assetUrl.isEmpty()) {
         if (tag != latestStableVersion) updateNoticeShown = false;
         latestStableVersion = tag;
         latestStableUrl = assetUrl;
@@ -440,7 +456,10 @@ void checkStableRelease() {
         updateNoticeUntil = 0;
       }
       otaLastError = "";
-    } else otaLastError = "Invalid GitHub release response";
+      if (!parseStableVersion(tag, versionParts)) otaLastError = "Latest release is not a semantic version";
+      else if (compareStableVersion(tag, DESK_FIRMWARE_VERSION) > 0 && assetUrl.isEmpty())
+        otaLastError = "Stable release missing valid board OTA image or SHA-256 digest";
+    }
   } else if (response == 404) {
     stableUpdateAvailable = false;
     otaLastError = ""; // No stable release has been published yet.
