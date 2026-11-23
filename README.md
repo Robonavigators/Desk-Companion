@@ -439,12 +439,22 @@ Made by **Robonavigators**.
 
 The XIAO ESP32-C3 and ESP32-S3 check GitHub's latest **stable, published release** after Wi-Fi time synchronization and approximately every six hours. When a newer version has a matching board-specific OTA application image and SHA-256 digest, the awake display shows a quiet update icon. The first touch after detecting a release briefly displays **Update Available / Go to Web Dashboard to install**. It never wakes a sleeping OLED. The local dashboard asks for confirmation and then installs the update; firmware does not update itself without consent.
 
-### Publishing a stable release
+### Development builds versus stable OTA releases
 
-1. On GitHub, open **Actions → Publish stable Desk-Companion OTA assets → Run workflow**.
-2. Enter a version such as `v1.0.0`. The workflow compiles **both variants**, validates the binaries, and then creates one stable GitHub Release containing `desk-companion-c3-ota.bin`, `desk-companion-s3-ota.bin`, and `SHA256SUMS.txt`.
-3. Optionally, a release published through the GitHub Releases UI can also have its OTA assets attached by the release-triggered workflow; allow that workflow to finish before testing updates.
+Every push that changes the production sketches or development workflow compiles both XIAO variants and, only after successful validation, updates the **merged USB installation images** on the Robonavigators Web Flasher. These are development builds, not GitHub stable releases. Outdated runs are automatically cancelled. The C3 uses Minimal SPIFFS; the S3 uses the default partition layout.
 
-Normal pushes to `main` still publish **merged USB Web Flasher binaries** to the Robonavigators website, not stable OTA releases. OTA downloads use **application** images, not merged USB images. Release assets must have GitHub-provided SHA-256 digests; incomplete releases do not trigger the install button. Development builds identify as `v0.0.0`; tagged release builds embed their actual version.
+A stable OTA release is **deliberate**, not created on every commit:
+
+1. Open **Actions → Publish stable Desk-Companion OTA assets → Run workflow**.
+2. Enter a **new, increasing semantic version**, such as `v1.0.0`. Do not reuse an existing tag.
+3. The workflow embeds that version in both production sketches, compiles both boards, validates the **application** images and SHA-256 checksums, then creates one non-prerelease GitHub Release.
+4. The release contains `desk-companion-c3-ota.bin`, `desk-companion-s3-ota.bin`, and `SHA256SUMS.txt`. GitHub's API asset `digest` fields are also checked against the locally compiled files.
+5. Check [the latest release API](https://api.github.com/repos/Robonavigators/Desk-Companion/releases/latest) for the semantic tag and both uploaded OTA assets before testing the dashboard on real C3 and S3 hardware.
+
+Do **not** upload merged USB images as OTA assets. The USB Web Flasher continues using the separate merged binaries published to the website. The workflow refuses to overwrite an existing release or tag. Stable builds are marked stable only after compilation and validation; physical OTA installation still requires hardware testing.
+
+**Legacy releases:** Older `firmware-build-*` GitHub Releases were incorrectly published as stable with only merged USB images. They remain in the repository until explicitly archived or removed. GitHub's `/releases/latest` endpoint can still return one of those legacy releases until a newer semantic stable release is successfully published. Never install a merged image through the OTA dashboard.
+
+**Troubleshooting:** `Update check: Invalid GitHub release response` can also mean that the ESP32 failed to deserialize the GitHub JSON response; release naming alone does not prove the error is fixed. Check Wi-Fi, HTTPS, memory availability, and device logs. A missing matching OTA asset normally prevents the update from being offered, rather than producing that exact parsing error.
 
 The updater requires valid system time for TLS certificate checks, verifies GitHub HTTPS certificates against a selected root CA set, checks chip-specific filenames and SHA-256 digest, and aborts if transfer, digest, or the alternate OTA slot fails. Keep the device powered during install. A fresh USB installation may be required if its previous partition layout does not offer an OTA slot. The dashboard is intentionally unauthenticated: use trusted home or office networks only. Test the upgrade on each hardware variant before announcing general availability.
