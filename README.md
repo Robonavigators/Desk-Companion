@@ -27,11 +27,11 @@ Real photos of the Desk-Companion prototype featuring the Seeed Studio XIAO boar
 |:---:|:---:|:---:|
 | ![Desk-Companion prototype — OLED demonstration, view 1](assets/desk-companion-demo-01.jpeg) | ![Desk-Companion prototype — OLED demonstration, view 2](assets/desk-companion-demo-02.jpeg) | ![Desk-Companion prototype — OLED demonstration, view 3](assets/desk-companion-demo-03.jpeg) |
 
-## Latest development build
+## Current production firmware
 
-The latest locally prepared five-screen build includes **Emotions, Clock, Weather, Forecast, and System Information**. Its emotion selector has 66 expressions, a searchable list with visual previews, and a two-step mobile search interaction: tap to open the list without the keyboard, then tap the Search field to type. The × close button was removed; tapping outside dismisses the selector.
+The firmware under `Firmware/` is the **real board-specific firmware** compiled by GitHub Actions and published to the Web Flasher. The standalone browser demo is not used as firmware, and the embedded dashboard makes real device API requests (it does not simulate device responses).
 
-**Release note:** These changes are in the separately prepared development firmware and dashboard files, and are **not yet confirmed to be present in the firmware files committed to this repository or the published web-flash binaries**. The repository firmware and Web Flasher may still have the previous four-screen version. Do not assume the five-screen build has been compiled or tested on hardware.
+Both XIAO ESP32-C3 and ESP32-S3 firmware builds provide four OLED screens: **Emotions, Clock, Weather, and Forecast**. The emotion picker contains 66 expressions. The firmware includes first-boot Wi-Fi setup, weather, touch controls, the local dashboard, ArduinoOTA, and opt-in stable-release update support. Physical hardware behaviour still requires testing.
 
 ## Features
 
@@ -303,24 +303,18 @@ An internet connection is required for online weather updates and initial time s
 
 ## OLED Screens
 
-| Screen | Function | Availability |
-|---|---|---|
-| Emotions | 66 expressive faces and automatic cycling | Repository firmware and development build |
-| Clock | Local date and time | Repository firmware and development build |
-| Weather | Current conditions | Repository firmware and development build |
-| Forecast | 3-day forecast | Repository firmware and development build |
-| System Information | Wi-Fi signal, device IP, free RAM and uptime | Latest development build; not yet confirmed in repository firmware |
+| Screen | Function |
+|---|---|
+| Emotions | 66 expressive faces and automatic cycling |
+| Clock | Local date and time |
+| Weather | Current conditions |
+| Forecast | 3-day forecast |
 
-Calendar, Pomodoro, and Stopwatch were considered during development but are **not included** in the current five-screen design.
+The repository's production firmware has **four** screens. A separate five-screen development/demo concept is **not part of these compiled builds**. The real embedded dashboard uses device API endpoints rather than an offline mock.
 
-### Emotion Selector (Latest Development Dashboard)
+### Emotion Selector
 
-1. Tap the emotion selector to open the list **without opening the mobile keyboard**.
-2. Tap the **Search** field to focus it and open the keyboard with a single tap.
-3. Select an emotion to apply it without triggering the keyboard.
-4. Tap outside the list to dismiss it. There is no × close button.
-
-The **Automatic** option cycles expressions at a configurable interval (default: 5 seconds). Individual emotions can be selected from the searchable list with previews. Mobile keyboard behaviour still requires on-device validation.
+Use the dashboard's emotion selector to pick a face, or select **Automatic** to cycle expressions. The dashboard and its API are served by the ESP32, not by a separate demo page.
 
 ### Touch Controls
 
@@ -360,7 +354,6 @@ Desk-Companion/
 ├── Firmware/
 │   ├── Desk-Companion-XIAO-ESP32-C3.ino
 │   ├── Desk-Companion-XIAO-ESP32-S3.ino
-│   └── Firmware.md
 ├── assets/
 │   ├── desk-companion-demo-01.jpeg
 │   ├── desk-companion-demo-02.jpeg
@@ -369,7 +362,7 @@ Desk-Companion/
 └── LICENSE
 ```
 
-The dashboard is embedded in each board-specific firmware sketch. The `assets/` directory contains the project photos, and `Firmware/Firmware.md` provides additional firmware documentation.
+The dashboard is embedded in each board-specific firmware sketch. The `assets/` directory contains project photos.
 
 ## Troubleshooting
 
@@ -409,11 +402,7 @@ Do not commit Wi-Fi passwords, API keys, or other personal information to the re
 
 ## Development Status
 
-Desk-Companion is under active development.
-
-C3 and S3 five-screen development firmware and a standalone HTML dashboard have been prepared separately. They have **not yet been merged into the repository firmware or verified on physical hardware**. Compilation, mobile touch behaviour, and web-flasher binaries still require validation.
-
-Web Flash installation depends on compatible compiled binaries and the multi-build manifest being available through the Web Flasher. Availability and physical-hardware testing have not been independently verified.
+The C3/S3 four-screen sketches in `Firmware/` are the source of truth for GitHub Actions firmware builds and the Web Flasher. Demo/development files stored outside this repository do not affect released binaries. GitHub Actions compilation alone does not prove physical-device behaviour, so verify on hardware before wider distribution.
 
 ## Contributing
 
