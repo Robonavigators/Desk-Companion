@@ -9,7 +9,7 @@
 
 **An open-source ESP32 desktop companion featuring 66 animated emotions, live weather, a smart clock, capacitive touch controls, and a professional web dashboard.**
 
-Designed and developed by **Robonavigators**.
+Designed and developed by **Rayyan Sharfaz Sait**, one of the founders of **Robonavigators**.
 
 ## About
 
