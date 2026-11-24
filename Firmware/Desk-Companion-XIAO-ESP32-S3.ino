@@ -483,6 +483,14 @@ void setup() {
   emotionHoldTime = prefs.getUInt("emoInterval", 5);
   if (emotionHoldTime < 1 || emotionHoldTime > 60) emotionHoldTime = 5;
   emotionHoldTime *= 1000; // Legacy NVS namespace retained to preserve existing saved settings
+  // -1 means automatic; 0..65 are manual selections. Persist only user changes.
+  int savedEmotionMode = prefs.getInt("emotionMode", -1);
+  if (savedEmotionMode >= 0 && savedEmotionMode < EMOTION_COUNT) {
+    manualEmotion = true;
+    currentEmotion = (Emotion)savedEmotionMode;
+  } else {
+    manualEmotion = false;
+  }
   wifiSSID = prefs.getString("wifiSSID", "");
   wifiPassword = prefs.getString("wifiPass", "");
   wifiSSID2 = prefs.getString("wifiSSID2", "");
@@ -697,7 +705,12 @@ void handleTouch() {
     isPressing = false;
     const unsigned long pressDuration = now - btnPressTime;
     if (!longPressHandled && pressDuration >= 45 && pressDuration < 1500) {
-      manualEmotion = false;
+      // Touch navigation exits a manual emotion on screen change; persist that choice.
+      if (manualEmotion) {
+        if (prefs.putInt("emotionMode", -1) == 0) Serial.println("Could not save automatic emotion mode");
+        manualEmotion = false;
+        lastEmotionChange = millis();
+      }
       displayState = (displayState + 1) % 4;
     }
   }
@@ -1271,6 +1284,8 @@ void setupWebServer() {
     if (!authorizeWrite()) return;
     int e = server.arg("emotion").toInt();
     if (e < -1 || e >= EMOTION_COUNT) return jsonReply(400, "Invalid emotion", true);
+    // Commit the selection before applying it; report NVS failures to the dashboard.
+    if (prefs.putInt("emotionMode", e) == 0) return jsonReply(500, "Could not save emotion mode", true);
     manualEmotion = e >= 0;
     if (manualEmotion) currentEmotion = (Emotion)e;
     displayState = 0;
