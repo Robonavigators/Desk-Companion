@@ -14,6 +14,10 @@
 // Desk-Companion Lite for Seeed XIAO ESP32-S3 (no speaker)
 // Rewire TTP223 OUT to D10 / GPIO9. Select XIAO_ESP32S3 in Arduino IDE.
 // Requires Arduino-ESP32 core with ESP32-S3 RTC GPIO deep-sleep wake support.
+// ==================================================
+// LIBRARIES
+// ==================================================
+// Libraries provide Wi-Fi, the web server, display graphics and other tools.
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
@@ -29,6 +33,10 @@
 #include <esp_mac.h>
 
 
+// ==================================================
+// DEVICE SETTINGS
+// ==================================================
+// Store network settings, recovery state and saved preferences.
 // --- Generic device configuration; no personal credentials in firmware ---
 #define TTP_PIN 9  // XIAO ESP32-S3 D10 / GPIO9
 WebServer server(80);
@@ -57,6 +65,10 @@ unsigned long wifiOfflineSince = 0;
 unsigned long recoveryConnectedSince = 0;
 
 // The setup access point is open. Start it only when configuration/recovery is needed.
+// ==================================================
+// WI-FI RECOVERY
+// ==================================================
+// Create a temporary hotspot so the user can fix Wi-Fi settings.
 void startRecoveryAP() {
   if (recoveryAPActive) return;
   WiFi.mode(WIFI_AP_STA);  // Keep the STA interface available for reconnection.
@@ -89,15 +101,27 @@ const char* SCREEN_NAMES[] = {"Emotions", "Clock", "Weather", "Forecast"};
 bool manualEmotion = false;
 void setupWebServer();
 
+// ==================================================
+// OLED DISPLAY
+// ==================================================
+// Create the display driver used to draw all four screens.
 // Hardware Objects
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
+// ==================================================
+// CLOCK SETTINGS
+// ==================================================
+// Get the current time from an internet time server.
 // Time Settings
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "time.google.com", 0, 60000); 
 String days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
 String months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
 
+// ==================================================
+// WEATHER SETTINGS
+// ==================================================
+// Keep weather readings and location settings. Credentials stay in device storage.
 // Weather settings are stored locally in NVS and never included in firmware.
 String currentCondition = "Loading...";
 float currentTemp = 0.0;
@@ -107,15 +131,27 @@ int currentHumidity = 0;
 float currentWindSpeed = 0.0;
 String currentWindDir = "N";
 
+// ==================================================
+// FORECAST DATA
+// ==================================================
+// Store weather predictions for the next three days.
 // Forecast Data
 float fc_temp[3] = {0, 0, 0};
 uint16_t fc_icon[3] = {69, 69, 69};
 unsigned long lastWeatherUpdate = 0;
 
+// ==================================================
+// SCREEN STATE
+// ==================================================
+// Remember which screen and emotion are currently selected.
 // State Management
 int displayState = 0; 
 unsigned long bootTime = 0;
 
+// ==================================================
+// TOUCH AND SLEEP SETTINGS
+// ==================================================
+// Track touch duration and whether the device is preparing to sleep.
 // Button & Deep Sleep Variables
 bool isPressing = false;
 unsigned long btnPressTime = 0;
@@ -123,10 +159,18 @@ bool longPressHandled = false;
 bool isGoingToSleep = false;
 unsigned long sleepTimer = 0;
 
+// ==================================================
+// DISPLAY REFRESH
+// ==================================================
+// Limit how often the OLED is redrawn.
 // Frame Rate Limiter
 unsigned long lastFrameTime = 0;
 const int FRAME_DELAY = 33; 
 
+// ==================================================
+// EYE ANIMATION
+// ==================================================
+// Move the pupils smoothly while the neutral face is shown.
 // Eye Animation Variables (used only in NEUTRAL emotion for idle look-around)
 int currentPupilX = 0, currentPupilY = 0;
 int targetPupilX = 0, targetPupilY = 0;
@@ -242,6 +286,10 @@ EmotionParams EMO[EMOTION_COUNT] = {
   /*SMITTEN*/       {EYE_DISC, 0, 0, false, 14, 40, EX_HEARTS},
 };
 
+// ==================================================
+// FACE DRAWING HELPERS
+// ==================================================
+// Draw small shapes used to build the animated faces.
 // ---------- helper drawing primitives ----------
 void drawMouthCurve(int cx, int cy, int w, int amp) {
   if (w <= 0) return;
@@ -414,6 +462,10 @@ static const uint8_t expressiveFaces[66][1024] PROGMEM = {
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,64,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,64,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,64,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,64,0,192,127,0,0,0,0,0,0,0,0,0,0,0,0,252,7,0,4,0,0,0,0,0,0,0,0,0,0,0,0,64,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,64,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,64,0,0,4,0,0,0,0,0,0,0,0,0,0,0,0,64,0,0,0,0,0,0,0,0,0,0,0,0,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,0,0,0,0,0,0,0,0,255,0,0,0,0,0,0,112,0,0,0,0,0,0,0,192,255,15,0,0,0,0,0,112,0,0,0,0,0,0,0,240,129,31,0,0,0,0,0,112,0,0,0,0,0,0,0,120,0,56,0,0,0,0,0,248,0,0,0,0,0,0,0,24,0,48,0,0,0,0,0,248,0,0,0,0,0,0,0,28,0,0,0,0,0,0,0,248,0,0,0,0,0,0,0,14,126,0,0,0,0,0,0,252,1,0,0,0,0,0,0,14,255,1,0,0,0,0,254,255,255,3,0,0,0,0,0,134,199,3,0,0,0,0,252,255,255,1,0,0,0,0,0,134,3,7,0,0,0,0,248,255,255,0,0,0,0,0,0,134,1,7,0,0,0,0,224,255,63,0,0,0,0,0,0,134,59,6,0,0,0,0,192,255,31,0,0,0,0,0,0,134,63,6,0,0,0,0,128,255,15,0,0,0,0,0,0,6,31,6,0,0,0,0,0,255,7,0,0,0,0,0,0,14,0,6,0,0,0,0,0,255,7,0,0,0,0,0,0,28,0,7,0,0,0,0,128,255,15,0,0,0,0,0,0,56,128,3,0,0,0,0,128,255,15,0,0,0,0,0,0,248,224,1,0,0,0,0,128,223,15,0,0,0,0,0,0,224,255,0,0,0,0,0,192,7,31,0,0,0,0,0,0,128,63,0,0,0,0,0,192,3,30,0,0,0,0,0,0,0,0,0,0,0,0,0,192,1,28,0,0,0,0,0,0,0,0,0,0,0,0,0,96,0,48,0,0,0,0,0,0,0,0,0,0,0,0,0,32,0,32,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,252,255,255,255,255,127,0,0,0,0,0,0,0,0,0,0,252,255,255,255,255,127,0,0,0,0,0,0,0,0,0,0,252,255,255,255,255,127,0,0,0,0,0,0,0,0,0,0,248,255,255,255,255,63,0,0,0,0,0,0,0,0,0,0,248,255,255,255,255,63,0,0,0,0,0,0,0,0,0,0,240,255,255,255,255,31,0,0,0,0,0,0,0,0,0,0,224,255,255,255,255,15,0,0,0,0,0,0,0,0,0,0,192,255,255,255,255,7,0,0,0,0,0,0,0,0,0,0,0,255,255,255,255,1,0,0,0,0,0,0,0,0,0,0,0,252,255,255,127,0,0,0,0,0,0,0,0,0,0,0,0,224,255,255,15,0,0,0,0,0,0,0,0,0,0,0,0,0,252,127,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
 {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,248,128,15,0,0,0,0,0,0,0,0,0,0,0,0,0,254,227,63,0,0,0,0,0,0,0,0,0,0,0,0,0,255,247,127,0,0,0,0,0,0,0,0,0,0,0,0,128,255,255,255,0,0,0,0,0,254,3,0,0,0,0,0,128,255,255,255,0,0,0,0,224,255,63,0,0,0,0,0,192,255,255,255,1,0,0,0,248,255,255,0,0,0,0,0,192,255,255,255,1,0,0,0,254,255,255,3,0,0,0,0,192,255,255,255,1,0,0,0,255,1,252,7,0,0,0,0,192,255,255,255,1,0,0,128,63,0,224,15,0,0,0,0,192,255,255,255,1,0,0,192,15,0,128,31,0,0,0,0,128,255,255,255,0,0,0,192,3,0,0,30,0,0,0,0,128,255,255,255,0,0,0,224,3,0,0,62,0,0,0,0,0,255,255,127,0,0,0,224,1,0,0,60,0,0,0,0,0,254,255,63,0,0,0,224,1,0,0,60,0,0,0,0,0,248,255,15,0,0,0,0,0,0,0,0,0,0,0,0,0,240,255,7,0,0,0,0,0,0,0,0,0,0,0,0,0,240,255,7,0,0,0,0,0,0,0,0,0,0,0,0,0,224,255,3,0,0,0,0,0,0,0,0,0,0,0,0,0,192,255,1,0,0,0,0,0,0,0,0,0,0,0,0,0,128,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0,128,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,127,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,62,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,28,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,28,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,32,34,0,0,0,0,0,0,0,0,0,0,32,34,0,0,16,17,0,0,0,0,0,0,0,0,0,0,16,17,0,0,16,17,0,0,0,0,0,0,0,0,0,0,16,17,0,0,136,8,0,0,0,0,0,0,0,0,0,0,136,8,0,0,136,8,0,0,0,0,0,0,0,0,0,0,136,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,255,255,255,255,255,255,1,0,0,0,0,0,0,0,0,0,255,255,255,255,255,255,1,0,0,0,0,0,0,0,0,0,255,255,255,255,255,255,1,0,0,0,0,0,0,0,0,0,254,255,255,255,255,255,0,0,0,0,0,0,0,0,0,0,254,255,255,255,255,255,0,0,0,0,0,0,0,0,0,0,252,255,255,255,255,127,0,0,0,0,0,0,0,0,0,0,248,255,255,255,255,63,0,0,0,0,0,0,0,0,0,0,224,255,255,255,255,15,0,0,0,0,0,0,0,0,0,0,128,255,255,255,255,3,0,0,0,0,0,0,0,0,0,0,0,254,255,255,255,0,0,0,0,0,0,0,0,0,0,0,0,240,255,255,31,0,0,0,0,0,0,0,0,0,0,0,0,0,254,255,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
 };
+// ==================================================
+// DRAW AN EMOTION
+// ==================================================
+// Combine eyes, mouth and extra shapes for the selected expression.
 void drawFace(Emotion e) {
   if ((unsigned)e >= 66) return;
   u8g2.drawXBMP(0, 0, 128, 64, expressiveFaces[(int)e]);
@@ -427,6 +479,10 @@ void drawFace(Emotion e) {
   }
 }
 
+// ==================================================
+// AUTOMATIC EMOTION SWITCHING
+// ==================================================
+// Choose a new expression when the selected interval has passed.
 void updateEmotion() {
   if (!manualEmotion && millis() - lastEmotionChange > emotionHoldTime) {
     Emotion next;
@@ -439,6 +495,10 @@ void updateEmotion() {
   }
 }
 
+// ==================================================
+// STARTUP AND SETUP SCREENS
+// ==================================================
+// Show the logo, first-time setup or Wi-Fi recovery instructions.
 // ---------- Startup Screen ----------
 void drawStartupScreen() {
   // Same Logisoso16 font used by the original Desk Buddy startup animation.
@@ -478,6 +538,10 @@ void drawWiFiRecoveryScreen() {
   u8g2.sendBuffer();
 }
 
+// ==================================================
+// SETUP - RUNS ONCE
+// ==================================================
+// Initialize hardware, load saved settings and start connecting to Wi-Fi.
 void setup() {
   Serial.begin(115200);
   pinMode(TTP_PIN, INPUT_PULLDOWN);
@@ -558,6 +622,10 @@ void setup() {
   randomSeed(esp_random());
 }
 
+// ==================================================
+// MAIN LOOP - RUNS REPEATEDLY
+// ==================================================
+// Keep network services, touch input, weather and display updates running.
 void loop() {
   if (recoveryAPActive) captiveDns.processNextRequest(); // Setup or Wi-Fi recovery.
   server.handleClient();
@@ -583,6 +651,7 @@ void loop() {
   }
   if (WiFi.status() == WL_CONNECTED) {
     startupWiFiPending = false;
+    // Start local ArduinoOTA and the dashboard network name once.
     if (!otaStarted) {
       ArduinoOTA.setHostname("desk-companion");
       ArduinoOTA.setPassword(adminSecret.c_str());
@@ -624,6 +693,7 @@ void loop() {
 
   // Keep setup visible until a real Wi-Fi connection succeeds. Saving SSID
   // alone must NOT close the portal; bad credentials must be fixable.
+  // Finish first-time setup only after a successful Wi-Fi connection.
   if (setupRequired) {
     if (WiFi.status() == WL_CONNECTED) {
       if (setupConnectedAt == 0) setupConnectedAt = millis();
@@ -653,6 +723,8 @@ void loop() {
   if (recoveryAPActive) startupWiFiPending = false;
 
   // During an active Wi-Fi outage, keep recovery instructions visible.
+  // Count three short taps to hide only the recovery screen.
+  // Keep the hotspot, web server and Wi-Fi retries running.
   if (recoveryAPActive && WiFi.status() != WL_CONNECTED && !recoveryDisplayDismissed) {
     const unsigned long now = millis();
     const bool touched = digitalRead(TTP_PIN) == HIGH;
@@ -691,6 +763,7 @@ void loop() {
   displayedTemp += (currentTemp - displayedTemp) * 0.08;
   if (fabs(currentTemp - displayedTemp) < 0.05) displayedTemp = currentTemp;
 
+  // Draw the selected OLED screen at the configured refresh rate.
   if (millis() - lastFrameTime >= FRAME_DELAY) {
     lastFrameTime = millis();
     u8g2.clearBuffer();
@@ -725,6 +798,10 @@ void loop() {
   }
 }
 
+// ==================================================
+// TOUCH CONTROLS AND DEEP SLEEP
+// ==================================================
+// A short tap changes screens. A long press puts the device to sleep.
 // --- Touch Input & Deep Sleep Trigger ---
 void handleTouch() {
   const unsigned long now = millis();
@@ -768,6 +845,10 @@ void triggerDeepSleep() {
 
 }
 
+// ==================================================
+// CLOCK SCREEN
+// ==================================================
+// Draw the date and current time on the OLED.
 // --- Time Screen ---
 void drawTimeScreen(struct tm *ptm) {
   String dateStr = days[timeClient.getDay()] + ", " + String(ptm->tm_mday) + " " + months[ptm->tm_mon];
@@ -799,6 +880,10 @@ void drawTimeScreen(struct tm *ptm) {
 
 // Dense, overlapping mist banks sized for both weather and forecast icons.
 const uint16_t WEATHER_ICON_MIST = 255;
+// ==================================================
+// WEATHER ICONS
+// ==================================================
+// Draw the mist symbol used on weather screens.
 void drawMistIcon(int x, int y, bool small) {
   u8g2.setDrawColor(1);
   if (small) {
@@ -819,6 +904,10 @@ void drawMistIcon(int x, int y, bool small) {
   }
 }
 
+// ==================================================
+// CURRENT WEATHER SCREEN
+// ==================================================
+// Draw the current temperature and weather conditions.
 // --- Weather Screen (u8g2 port of the reference layout, smoothed temp) ---
 void drawCurrentWeather() {
   // 1. HEADER (Location)
@@ -868,6 +957,10 @@ void drawCurrentWeather() {
   u8g2.drawStr(58, 61, windBuf);
 }
 
+// ==================================================
+// THREE-DAY FORECAST SCREEN
+// ==================================================
+// Draw the predicted weather for the next three days.
 // --- Forecast Screen (rounded temps, no decimal point) ---
 void drawForecastScreen() {
   u8g2.setFont(u8g2_font_helvB08_tf);
@@ -900,6 +993,10 @@ void drawForecastScreen() {
 // Uses u8g2_font_open_iconic_weather glyph codes for more variety.
 // Reference glyphs in that font: 65=sun,66=moon,67=rain,68=snow,69=clear day/sun-cloud,
 // 70=fog/mist,71=wind,72=storm/lightning. (Exact indices per u8g2 open_iconic_weather set.)
+// ==================================================
+// WEATHER CONDITION MAPPING
+// ==================================================
+// Convert weather service condition codes into labels and icons.
 void mapOWMCondition(int id, String &cond, uint16_t &icon) {
   if (id == 800) {
     cond = "Clear"; icon = 69; // sun
@@ -929,6 +1026,10 @@ void mapOWMCondition(int id, String &cond, uint16_t &icon) {
   }
 }
 
+// ==================================================
+// FETCH CURRENT WEATHER
+// ==================================================
+// Request current weather from OpenWeatherMap.
 // --- Current weather via OWM /weather ---
 void fetchWeather() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -969,12 +1070,20 @@ void fetchWeather() {
   http.end();
 }
 
+// ==================================================
+// WIND DIRECTION
+// ==================================================
+// Convert a direction in degrees into a compass label.
 String degToCompass(float deg) {
   const char* dirs[] = {"N","NE","E","SE","S","SW","W","NW"};
   int idx = (int)((deg + 22.5) / 45.0) % 8;
   return String(dirs[idx]);
 }
 
+// ==================================================
+// FETCH FORECAST
+// ==================================================
+// Request forecast data and select readings near midday.
 // --- 3-day forecast via OWM /forecast (3-hour steps, pick ~midday each day) ---
 void fetchForecast() {
   if (WiFi.status() != WL_CONNECTED) return;
@@ -1006,6 +1115,10 @@ void fetchForecast() {
 }
 
 
+// ==================================================
+// LOCAL WEB DASHBOARD
+// ==================================================
+// The web interface is stored in firmware and served directly by the ESP32.
 // ---------------- Device-local WebServer dashboard ----------------
 // Lossless Brotli-compressed dashboard. Browser decompresses it automatically.
 // The HTML/CSS/JS are byte-for-byte identical to the original web interface.
@@ -1189,6 +1302,10 @@ $('scanWifi').addEventListener('click',()=>scanWiFi(false));$('scanWifi2').addEv
 status();setInterval(status,4000);
 </script></body></html>)DBHTML";
 
+// ==================================================
+// DASHBOARD API HELPERS
+// ==================================================
+// Prepare responses to requests from the local dashboard.
 bool authorizeWrite() { return true; } // Dashboard login intentionally disabled.
 void jsonReply(int status, const String& message, bool error = false) {
   JsonDocument d;
@@ -1198,6 +1315,10 @@ void jsonReply(int status, const String& message, bool error = false) {
   server.send(status, "application/json", out);
 }
 // Captive portal probes used by phones, tablets and computers.
+// ==================================================
+// CAPTIVE PORTAL
+// ==================================================
+// Redirect setup-network visitors to the device dashboard.
 void redirectToCaptivePortal() {
   server.sendHeader("Location", "http://192.168.4.1/", true);
   server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate");
@@ -1205,6 +1326,10 @@ void redirectToCaptivePortal() {
 }
 // Resolve the user-entered city/state/country into coordinates using OpenWeatherMap.
 // No latitude/longitude input is needed in the dashboard.
+// ==================================================
+// LOCATION LOOKUP
+// ==================================================
+// Convert the entered city, region and country into coordinates.
 bool resolveLocation(const String& city, const String& region, const String& country,
                      const String& key, float& latOut, float& lonOut) {
   if (WiFi.status() != WL_CONNECTED || key.isEmpty()) return false;
@@ -1239,6 +1364,10 @@ bool resolveLocation(const String& city, const String& region, const String& cou
   return false;
 }
 
+// ==================================================
+// WEB SERVER ROUTES
+// ==================================================
+// Connect dashboard requests to the corresponding device actions.
 void setupWebServer() {
   server.on("/generate_204", HTTP_GET, redirectToCaptivePortal);
   server.on("/gen_204", HTTP_GET, redirectToCaptivePortal);
