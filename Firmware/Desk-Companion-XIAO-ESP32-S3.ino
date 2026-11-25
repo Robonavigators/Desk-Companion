@@ -48,6 +48,10 @@ bool trySecondaryNext = false;
 const unsigned long WIFI_RETRY_MS = 15000;
 const unsigned long WIFI_RECOVERY_DELAY_MS = 30000;
 bool recoveryAPActive = false;
+bool recoveryDisplayDismissed = false;
+bool recoveryTouchDown = false;
+uint8_t recoveryTapCount = 0;
+unsigned long recoveryTouchStarted = 0, recoveryLastTap = 0;
 bool startupWiFiPending = true;
 unsigned long wifiOfflineSince = 0;
 unsigned long recoveryConnectedSince = 0;
@@ -60,6 +64,9 @@ void startRecoveryAP() {
   if (WiFi.softAP(apSSID.c_str())) {
     captiveDns.start(CAPTIVE_DNS_PORT, "*", WiFi.softAPIP());
     recoveryAPActive = true;
+    recoveryDisplayDismissed = false;
+    recoveryTouchDown = false;
+    recoveryTapCount = 0;
     Serial.println("Recovery AP ON: " + apSSID + " at http://192.168.4.1/");
   } else {
     Serial.println("Recovery AP failed to start; will retry");
@@ -71,6 +78,9 @@ void stopRecoveryAP() {
   captiveDns.stop();
   WiFi.softAPdisconnect(true);
   recoveryAPActive = false;
+  recoveryDisplayDismissed = false;
+  recoveryTouchDown = false;
+  recoveryTapCount = 0;
   WiFi.mode(WIFI_STA);
   Serial.println("Recovery AP OFF: station Wi-Fi connected");
 }
@@ -643,7 +653,28 @@ void loop() {
   if (recoveryAPActive) startupWiFiPending = false;
 
   // During an active Wi-Fi outage, keep recovery instructions visible.
-  if (recoveryAPActive && WiFi.status() != WL_CONNECTED) {
+  if (recoveryAPActive && WiFi.status() != WL_CONNECTED && !recoveryDisplayDismissed) {
+    const unsigned long now = millis();
+    const bool touched = digitalRead(TTP_PIN) == HIGH;
+    if (recoveryTapCount && now - recoveryLastTap > 700) recoveryTapCount = 0;
+    if (touched && !recoveryTouchDown) {
+      recoveryTouchDown = true;
+      recoveryTouchStarted = now;
+    } else if (!touched && recoveryTouchDown) {
+      recoveryTouchDown = false;
+      const unsigned long duration = now - recoveryTouchStarted;
+      if (duration >= 45 && duration < 500) {
+        recoveryLastTap = now;
+        if (++recoveryTapCount >= 3) {
+          recoveryDisplayDismissed = true;
+          recoveryTapCount = 0;
+          isPressing = false;
+          displayState = 0;
+          lastFrameTime = 0;
+          return;
+        }
+      } else recoveryTapCount = 0;
+    }
     if (millis() - lastFrameTime >= 1000) {
       lastFrameTime = millis();
       drawWiFiRecoveryScreen();

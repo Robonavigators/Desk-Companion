@@ -33,7 +33,7 @@ The firmware under `Firmware/` is the **real board-specific firmware** compiled 
 
 Both XIAO ESP32-C3 and ESP32-S3 firmware builds provide four OLED screens: **Emotions, Clock, Weather, and Forecast**. The emotion picker contains 66 expressions. The firmware includes first-boot Wi-Fi setup, weather, touch controls, the local dashboard, and ArduinoOTA support. Physical hardware behaviour still requires testing.
 
-On configured devices, the Desk-Companion startup logo remains visible while connecting to saved Wi-Fi. If neither network connects within the 30-second recovery window, the OLED displays Wi-Fi recovery instructions. First-time devices continue to show the setup portal instructions.
+On configured devices, the Desk-Companion startup logo remains visible while connecting to saved Wi-Fi. If neither network connects within the 30-second recovery window, the OLED displays Wi-Fi recovery instructions. First-time devices continue to show the setup portal instructions. During Wi-Fi recovery, triple-tap the touch sensor to dismiss the recovery instructions and return to normal OLED screens while the recovery hotspot and reconnection attempts remain active. The instructions reappear during a new outage.
 
 ## Features
 
