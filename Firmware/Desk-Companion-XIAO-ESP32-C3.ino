@@ -48,6 +48,7 @@ bool trySecondaryNext = false;
 const unsigned long WIFI_RETRY_MS = 15000;
 const unsigned long WIFI_RECOVERY_DELAY_MS = 30000;
 bool recoveryAPActive = false;
+bool startupWiFiPending = true;
 unsigned long wifiOfflineSince = 0;
 unsigned long recoveryConnectedSince = 0;
 
@@ -524,6 +525,8 @@ void setup() {
   wifiOfflineSince = millis();  // First outage window starts after boot.
   if (wifiSSID.length()) WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
   else if (wifiSSID2.length()) WiFi.begin(wifiSSID2.c_str(), wifiPassword2.c_str());
+  lastWiFiAttempt = millis();
+  trySecondaryNext = !wifiSSID.isEmpty() && !wifiSSID2.isEmpty();
   setupWebServer();
   server.begin();
   portalReady = true;
@@ -536,7 +539,7 @@ void setup() {
   }
   Serial.println("On home/classroom Wi-Fi: http://desk-companion.local/ (if mDNS is supported)");
   // Display the setup instructions until the first Wi-Fi connection succeeds.
-  // On configured devices, the startup logo transitions directly to emotions.
+  // On configured devices, keep the startup logo until Wi-Fi connects or recovery starts.
   if (setupRequired) drawFirstTimeSetupScreen();
 
   timeClient.begin();
@@ -568,6 +571,7 @@ void loop() {
     trySecondaryNext = !trySecondaryNext;
   }
   if (WiFi.status() == WL_CONNECTED) {
+    startupWiFiPending = false;
     if (!otaStarted) {
       ArduinoOTA.setHostname("desk-companion");
       ArduinoOTA.setPassword(adminSecret.c_str());
@@ -631,6 +635,11 @@ void loop() {
       return;
     }
   }
+
+  // Keep the boot logo on screen until the initial connection or recovery.
+  // Network retries, captive DNS and the web server continue running above.
+  if (startupWiFiPending && WiFi.status() != WL_CONNECTED && !recoveryAPActive) return;
+  if (recoveryAPActive) startupWiFiPending = false;
 
   // During an active Wi-Fi outage, keep recovery instructions visible.
   if (recoveryAPActive && WiFi.status() != WL_CONNECTED) {
