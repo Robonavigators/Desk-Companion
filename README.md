@@ -429,6 +429,7 @@ Third-party dependencies retain their respective licenses.
 **Desk-Companion — By Robonavigators**
 
 Built using the Seeed Studio XIAO ESP32 platform, Arduino framework, U8g2, and OpenWeatherMap.
+
 **Build and Designed by Rayyan Sharfaz Sait**.
 ---
 
